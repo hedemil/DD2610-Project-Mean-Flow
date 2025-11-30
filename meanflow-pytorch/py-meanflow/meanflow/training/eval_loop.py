@@ -37,6 +37,14 @@ def eval_model(
     gc.collect()
     model.train(False)
 
+    # --- normalize device & detect CUDA ---
+    if isinstance(device, torch.device):
+        dev = device
+    else:
+        dev = torch.device(device) if isinstance(device, str) else torch.device("cpu")
+    is_cuda = (dev.type == "cuda" and torch.cuda.is_available())
+    # --------------------------------------
+
     if args.distributed:
         data_loader.sampler.set_epoch(0)
 
@@ -58,13 +66,33 @@ def eval_model(
 
         if num_synthetic < fid_samples:          
             model_without_ddp = model.module if isinstance(model, DistributedDataParallel) else model  
+            
+            # --------- RNG handling: CUDA-safe + CPU-safe ----------
+            if is_cuda:
+                ctx = torch.random.fork_rng(devices=[dev], enabled=True)
+            else:
+                # CPU-only: don't pass devices -> avoids torch.cuda.random
+                ctx = torch.random.fork_rng(enabled=True)
+            # -------------------------------------------------------
 
-            with torch.random.fork_rng(devices=[device]):
-                #per node and per step seed
+            with ctx:
+                # per node and per step seed
                 torch.manual_seed(rng.fold_in(args.seed, rng.get_rank(), data_iter_step, epoch))
-                with torch.amp.autocast('cuda', enabled=False), torch.no_grad():
-                    synthetic_samples = model_without_ddp.sample(samples_shape=samples.shape, net=net_ema, device=device)
-            torch.cuda.synchronize()
+                if is_cuda:
+                    torch.cuda.manual_seed_all(
+                        rng.fold_in(args.seed, rng.get_rank(), data_iter_step, epoch)
+                    )
+
+                # autocast is disabled anyway, so it's safe on CPU
+                with torch.amp.autocast("cuda", enabled=False), torch.no_grad():
+                    synthetic_samples = model_without_ddp.sample(
+                        samples_shape=samples.shape,
+                        net=net_ema,
+                        device=dev,
+                    )
+
+            if is_cuda:
+                torch.cuda.synchronize()
 
             # Scaling to [0, 1] from [-1, 1]
             synthetic_samples = torch.clamp(
