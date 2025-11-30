@@ -24,34 +24,16 @@ def fold_in(seed: int, *args) -> int:
     folded_seed = int(h, 16) % (2**63)  # Safe for torch.manual_seed()
     return folded_seed
 
+
 def train_step_with_rng_control(train_step_fn, model_without_ddp, step: int, base_seed: int, *args, **kwargs):
     rank = get_rank()
     seed = fold_in(base_seed, step, rank, "train_step")
+    input_device = args[0].device if len(args) > 0 and torch.is_tensor(args[0]) else "cpu"
 
-    # Figure out which device the input is on
-    if len(args) > 0 and torch.is_tensor(args[0]):
-        input_device = args[0].device
-    else:
-        input_device = torch.device("cpu")
-
-    # Are we actually on CUDA?
-    is_cuda = (
-        isinstance(input_device, torch.device)
-        and input_device.type == "cuda"
-        and torch.cuda.is_available()
-    )
-
-    # Only pass `devices` to fork_rng when using CUDA, otherwise it will touch torch.cuda and crash.
-    if is_cuda:
-        ctx = torch.random.fork_rng(devices=[input_device], enabled=True)
-    else:
-        ctx = torch.random.fork_rng(enabled=True)
-
-    with ctx:
+    with torch.random.fork_rng(devices=[input_device], enabled=True):
         torch.manual_seed(seed)
-        if is_cuda:
-            torch.cuda.manual_seed_all(seed)
-
+        if torch.cuda.is_available() and "cuda" in str(input_device):
+            torch.cuda.manual_seed(seed)
         return train_step_fn(model_without_ddp, *args, **kwargs)
 
 
