@@ -386,6 +386,16 @@ def train_and_evaluate(
       vis_sample = run_p_sample_step(p_sample_step, state, vis_sample_idx, latent_manager)
       vis_sample = make_grid_visualization(vis_sample, grid=4)
       writer.write_images(epoch+1, {'vis_sample': vis_sample})
+
+      # Also save as PNG for easy viewing
+      if jax.process_index() == 0:
+        from PIL import Image
+        samples_dir = os.path.join(workdir, 'samples')
+        os.makedirs(samples_dir, exist_ok=True)
+        img = Image.fromarray(vis_sample)
+        img.save(os.path.join(samples_dir, f'epoch_{epoch+1:04d}.png'))
+        log_for_0(f'Saved sample image to {samples_dir}/epoch_{epoch+1:04d}.png')
+
       writer.flush()
 
     ########### Train ###########
