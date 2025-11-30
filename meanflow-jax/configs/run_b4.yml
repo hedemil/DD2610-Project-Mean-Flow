@@ -21,15 +21,15 @@ training:
     seed: 42
 
 fid:
-    device_batch_size: 20
-    num_samples: 50000
-    cache_ref: YOUR_FID_CACHE_REF
+    device_batch_size: 10  # Reduced from 20 to avoid GPU OOM
+    num_samples: 20000  # Testing with 20k samples to avoid RAM OOM
+    cache_ref: imgnet256_adm.npz
 
 sampling:
     num_steps: 1
 
 # Load checkpoints for eval or resuming training.
-# load_from: CKPT_PATH
+load_from: /home/emil/KTH/Adv. Deep Learning/Project/DD2610-Project-Mean-Flow/meanflow-jax/checkpoint/b4_240ep_kappa0.5/checkpoint_1200960
 
-load_from: null
-eval_only: False
+# load_from: null
+eval_only: True

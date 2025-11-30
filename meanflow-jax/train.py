@@ -31,8 +31,8 @@ from utils.vis_util import make_grid_visualization
 # Initialize
 #######################################################
 
-def initialized(key, image_size, model):
-  input_shape = (1, image_size, image_size, 4)
+def initialized(key, image_size, model, in_channels=4):
+  input_shape = (1, image_size, image_size, in_channels)
   x = jnp.ones(input_shape)
   t = jnp.ones((1,), dtype=int)
   y = jnp.ones((1,), dtype=int)
@@ -64,8 +64,10 @@ def create_train_state(
   """
 
   rng, rng_init = random.split(rng)
-  
-  _, params = initialized(rng_init, image_size, model)
+
+  # Get in_channels from dataset config for proper model initialization
+  in_channels = config.dataset.get('in_channels', 4)  # Default to 4 for ImageNet latents
+  _, params = initialized(rng_init, image_size, model, in_channels=in_channels)
   ema_params = deepcopy(params)
   ema_params = update_ema(ema_params, params, 0)
   print_params(params['net'])
@@ -138,6 +140,53 @@ def train_step_with_vae(state, batch, rng_init, config, lr, ema_fn, latent_mnger
 
   return new_state, metrics
 
+
+def train_step_direct(state, batch, rng_init, config, lr, ema_fn):
+  """
+  Perform a single training step with direct image input (no VAE encoding).
+  Used for MNIST and other datasets that don't require latent encoding.
+  """
+  rng_step = random.fold_in(rng_init, state.step)
+  rng_base = random.fold_in(rng_step, lax.axis_index(axis_name='batch'))
+
+  images = batch['image']  # [B, H, W, C] - uint8 [0, 255]
+  labels = batch['label']
+
+  # Convert to float32 [-1, 1] for the model
+  images = (images.astype(jnp.float32) / 127.5) - 1.0
+
+  def loss_fn(params):
+    """loss function used for training."""
+    variables = {
+        "params": params,
+    }
+    outputs = state.apply_fn(
+      variables,
+      imgs=images,
+      labels=labels,
+      rngs=dict(gen=rng_base,),
+    )
+    loss, dict_losses = outputs
+    return loss, (dict_losses,)
+
+  grad_fn = jax.value_and_grad(loss_fn, has_aux=True)
+  aux, grads = grad_fn(state.params)
+  grads = lax.pmean(grads, axis_name='batch')
+
+  dict_losses, = aux[1]
+  metrics = compute_metrics(dict_losses)
+  metrics["lr"] = lr
+
+  new_state = state.apply_gradients(
+    grads=grads,
+  )
+
+  ema_value = ema_fn(state.step)
+  new_ema = update_ema(new_state.ema_params, new_state.params, ema_value)
+  new_state = new_state.replace(ema_params=new_ema)
+
+  return new_state, metrics
+
 #######################################################
 # Sampling and Metrics
 #######################################################
@@ -152,16 +201,19 @@ def sample_step(variable, sample_idx, model, rng_init, device_batch_size, config
   return images
 
 
-def run_p_sample_step(p_sample_step, state, sample_idx, latent_manager, ema=True):
+def run_p_sample_step(p_sample_step, state, sample_idx, latent_manager=None, ema=True):
   variable = {"params": state.ema_params if ema else state.params}
-  latent = p_sample_step(variable, sample_idx=sample_idx)
-  latent = latent.reshape(-1, *latent.shape[2:])
+  samples = p_sample_step(variable, sample_idx=sample_idx)
+  samples = samples.reshape(-1, *samples.shape[2:])
 
-  # Decode
-  samples = latent_manager.decode(latent)
-  assert not jnp.any(jnp.isnan(samples)), f"There is nan in decoded samples! Latent range: {latent.min()}, {latent.max()}. nan in latent: {jnp.any(jnp.isnan(latent))}"
+  # Decode only if using VAE (ImageNet)
+  if latent_manager is not None:
+    samples = latent_manager.decode(samples)
+    assert not jnp.any(jnp.isnan(samples)), f"There is nan in decoded samples! Latent range: {samples.min()}, {samples.max()}. nan in latent: {jnp.any(jnp.isnan(samples))}"
+    samples = samples.transpose(0, 2, 3, 1) # (B, C, H, W) -> (B, H, W, C)
+  # else: MNIST/direct - samples are already in (B, H, W, C) format
 
-  samples = samples.transpose(0, 2, 3, 1) # (B, C, H, W) -> (B, H, W, C)
+  # Convert from [-1, 1] to [0, 255]
   samples = 127.5 * samples + 128.0
   samples = jnp.clip(samples, 0, 255).astype(jnp.uint8)
 
@@ -215,12 +267,32 @@ def train_and_evaluate(
   if local_batch_size % jax.local_device_count() > 0:
     raise ValueError('Local batch size must be divisible by the number of local devices')
 
-  train_loader, steps_per_epoch = input_pipeline.create_split(
-    config.dataset,
-    local_batch_size,
-    split='train',
-  )
-  log_for_0('Steps per Epoch: {}'.format(steps_per_epoch))
+  # Load dataset based on type
+  if config.dataset.name == 'mnist':
+    from utils.mnist_loader import create_mnist_loader
+    train_loader, num_samples, steps_per_epoch = create_mnist_loader(
+        config.dataset.root,
+        local_batch_size,
+        split='train',
+        num_workers=config.dataset.get('num_workers', 4)
+    )
+    log_for_0(f'Loaded MNIST: {num_samples} samples, {steps_per_epoch} steps/epoch')
+  elif config.dataset.name == 'mnist3d':
+    from utils.mnist3d_loader import create_mnist3d_loader
+    train_loader, num_samples, steps_per_epoch = create_mnist3d_loader(
+        config.dataset.root,
+        local_batch_size,
+        split='train',
+        num_workers=config.dataset.get('num_workers', 4)
+    )
+    log_for_0(f'Loaded 3D-MNIST: {num_samples} samples, {steps_per_epoch} steps/epoch')
+  else:
+    train_loader, steps_per_epoch = input_pipeline.create_split(
+      config.dataset,
+      local_batch_size,
+      split='train',
+    )
+    log_for_0('Steps per Epoch: {}'.format(steps_per_epoch))
 
   ########### Create Model ###########
   model_config = config.model.to_dict()
@@ -245,19 +317,39 @@ def train_and_evaluate(
   state = jax_utils.replicate(state)
   ema_fn = ema_schedules(config)
 
-  latent_manager = LatentManager(config.dataset.vae, config.fid.device_batch_size, image_size)
+  # Only create latent manager for datasets that need VAE encoding
+  use_direct_images = config.dataset.name in ['mnist', 'mnist3d']
+  if use_direct_images:
+    latent_manager = None
+    log_for_0('Using direct image input (no VAE)')
+  else:
+    latent_manager = LatentManager(config.dataset.vae, config.fid.device_batch_size, image_size)
+    log_for_0('Using VAE latent encoding')
 
-  p_train_step = jax.pmap(
-      partial(
-        train_step_with_vae, 
-        rng_init=rng, 
-        config=config, 
-        lr=base_lr,
-        ema_fn=ema_fn,
-        latent_mnger=latent_manager,
-      ),
-      axis_name='batch',
-  )
+  # Choose training step based on dataset
+  if use_direct_images:
+    p_train_step = jax.pmap(
+        partial(
+          train_step_direct,
+          rng_init=rng,
+          config=config,
+          lr=base_lr,
+          ema_fn=ema_fn,
+        ),
+        axis_name='batch',
+    )
+  else:
+    p_train_step = jax.pmap(
+        partial(
+          train_step_with_vae,
+          rng_init=rng,
+          config=config,
+          lr=base_lr,
+          ema_fn=ema_fn,
+          latent_mnger=latent_manager,
+        ),
+        axis_name='batch',
+    )
   train_metrics = []
   log_for_0('Initial compilation, this might take some minutes...')
 

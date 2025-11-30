@@ -1,0 +1,41 @@
+model:
+    cls: DiT_S_2  # Smaller model for 64x64 images
+
+dataset:
+    name: mnist3d
+    root: /home/emil/KTH/Adv. Deep Learning/Project/DD2610-Project-Mean-Flow/meanflow-jax/data
+    image_size: 64  # 3D-MNIST is 64x64
+    num_classes: 10  # Digits 0-9
+    in_channels: 1  # Grayscale
+
+training:
+    log_per_step: 50
+    checkpoint_per_epoch: 5
+
+    num_epochs: 100
+    learning_rate: 0.0001
+    batch_size: 128  # Smaller than ImageNet since images are smaller
+    adam_b2: 0.95
+    ema_type: 'const'
+
+    sample_on_training: True
+    sample_per_epoch: 5
+    fid_per_epoch: 10
+
+    seed: 42
+
+fid:
+    device_batch_size: 100  # Can be higher for 64x64 images
+    num_samples: 2000  # Use full test set
+    on_training: False  # Disable FID during training for now
+
+sampling:
+    num_steps: 1
+    seed: 123
+
+method:
+    kappa: 0.5  # MeanFlow interpolation parameter
+
+# No pretrained checkpoint for MNIST
+load_from: null
+eval_only: False

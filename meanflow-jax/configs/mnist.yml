@@ -1,0 +1,44 @@
+model:
+    cls: DiT_S_2  # Small model with patch_size=2 for 32x32 images
+    in_channels: 1  # Grayscale
+    input_size: 32  # MNIST is 32x32
+
+dataset:
+    name: mnist
+    root: /home/emil/KTH/Adv. Deep Learning/Project/DD2610-Project-Mean-Flow/meanflow-jax/data
+    image_size: 32  # MNIST resized to 32x32
+    num_classes: 10  # Digits 0-9
+    in_channels: 1  # Grayscale
+    num_workers: 2
+
+training:
+    log_per_step: 50
+    checkpoint_per_epoch: 10
+
+    num_epochs: 10
+    learning_rate: 0.0001
+    batch_size: 16  # Very small batch for 8GB GPU with JVP computation
+    adam_b2: 0.95
+    ema_type: 'const'
+
+    sample_on_training: True
+    sample_per_epoch: 5
+    fid_per_epoch: 50  # Disable FID (set high)
+
+    seed: 42
+
+fid:
+    device_batch_size: 100
+    num_samples: 10000
+    on_training: False  # Disable FID for now
+
+sampling:
+    num_steps: 1
+    seed: 123
+
+method:
+    kappa: 0.5  # MeanFlow interpolation parameter
+
+# No pretrained checkpoint
+load_from: null
+eval_only: False
