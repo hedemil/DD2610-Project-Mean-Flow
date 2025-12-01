@@ -3,3 +3,4 @@ pip install jaxlib==0.4.27 "flax>=0.8"
 pip install pillow clu tensorflow==2.15.0 "keras<3" "torch<=2.4" torchvision tensorflow_datasets matplotlib==3.9.2
 pip install orbax-checkpoint==0.4.4 ml-dtypes==0.5.0 tensorstore==0.1.67
 pip install diffusers dm-tree cached_property
+pip install --upgrade "jax[cuda12]==0.4.30"

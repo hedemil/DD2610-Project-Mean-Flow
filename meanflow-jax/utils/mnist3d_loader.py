@@ -83,6 +83,14 @@ def create_mnist3d_loader(data_path, batch_size, split='train', num_workers=4):
         sampler = None
         shuffle = (split == 'train')
 
+    # Custom collate function to return tuple format (image, label)
+    # Images are (H, W, C), permute to (C, H, W) for prepare_batch_data
+    def collate_fn(batch):
+        images = torch.stack([torch.from_numpy(item['image']) for item in batch])  # (B, H, W, C)
+        images = images.permute(0, 3, 1, 2)  # (B, C, H, W)
+        labels = torch.tensor([item['label'] for item in batch])
+        return (images, labels)
+
     dataloader = DataLoader(
         dataset,
         batch_size=batch_size,
@@ -91,6 +99,7 @@ def create_mnist3d_loader(data_path, batch_size, split='train', num_workers=4):
         num_workers=num_workers,
         pin_memory=True,
         drop_last=True,
+        collate_fn=collate_fn,
     )
 
     steps_per_epoch = len(dataloader)

@@ -1,9 +1,11 @@
 model:
     cls: DiT_S_2  # Smaller model for 64x64 images
+    in_channels: 1  # Grayscale
+    input_size: 64  # 3D-MNIST is 64x64
 
 dataset:
     name: mnist3d
-    root: /home/emil/KTH/Adv. Deep Learning/Project/DD2610-Project-Mean-Flow/meanflow-jax/data
+    root: ./data # /home/emil/KTH/Adv. Deep Learning/Project/DD2610-Project-Mean-Flow/meanflow-jax/data
     image_size: 64  # 3D-MNIST is 64x64
     num_classes: 10  # Digits 0-9
     in_channels: 1  # Grayscale

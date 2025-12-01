@@ -428,6 +428,9 @@ def train_and_evaluate(
         )
         train_metrics = []
 
+        # Clear JAX compilation cache to prevent memory fragmentation
+        jax.clear_caches()
+
     ########### Save Checkpoint ###########
     if (
       (epoch+1) % config.training.checkpoint_per_epoch == 0

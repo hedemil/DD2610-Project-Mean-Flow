@@ -5,7 +5,7 @@ model:
 
 dataset:
     name: mnist
-    root: /home/emil/KTH/Adv. Deep Learning/Project/DD2610-Project-Mean-Flow/meanflow-jax/data
+    root: ./data # /home/emil/KTH/Adv. Deep Learning/Project/DD2610-Project-Mean-Flow/meanflow-jax/data
     image_size: 32  # MNIST resized to 32x32
     num_classes: 10  # Digits 0-9
     in_channels: 1  # Grayscale
@@ -17,7 +17,7 @@ training:
 
     num_epochs: 10
     learning_rate: 0.0001
-    batch_size: 16  # Very small batch for 8GB GPU with JVP computation
+    batch_size: 64  # Very small batch for 8GB GPU with JVP computation
     adam_b2: 0.95
     ema_type: 'const'
 
