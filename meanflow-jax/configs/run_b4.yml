@@ -2,7 +2,7 @@ model:
     cls: DiT_B_4
 
 dataset:
-    root: YOUR_DATA_ROOT
+    root: /home/jupyter/DD2610-Project-Mean-Flow/meanflow-jax/dummy_data
 
 training:
     log_per_step: 100
@@ -10,7 +10,7 @@ training:
 
     num_epochs: 240
     learning_rate: 0.0001
-    batch_size: 256
+    batch_size: 128
     adam_b2: 0.95
     ema_type: 'const'
 
@@ -21,15 +21,15 @@ training:
     seed: 42
 
 fid:
-    device_batch_size: 20
+    device_batch_size: 10
     num_samples: 50000
-    cache_ref: YOUR_FID_CACHE_REF
+    cache_ref: /home/jupyter/DD2610-Project-Mean-Flow/meanflow-jax/imagenet_fid_stats.npz
+    on_training: True
 
 sampling:
     num_steps: 1
 
 # Load checkpoints for eval or resuming training.
-# load_from: CKPT_PATH
+load_from: /home/jupyter/DD2610-Project-Mean-Flow/meanflow-jax/checkpoints/mf_b4/checkpoint_1200960
 
-load_from: null
-eval_only: False
+eval_only: True
