@@ -7,8 +7,10 @@ dataset:
     name: mnist3d
     root: ./data # /home/emil/KTH/Adv. Deep Learning/Project/DD2610-Project-Mean-Flow/meanflow-jax/data
     image_size: 64  # 3D-MNIST is 64x64
+    image_channels: 1  # Grayscale (required by generate function)
     num_classes: 10  # Digits 0-9
-    in_channels: 1  # Grayscale
+    in_channels: 1  # Grayscale (for backward compatibility)
+    num_workers: 0  # Set to 0 to avoid HDF5 multiprocessing issues
 
 training:
     log_per_step: 50

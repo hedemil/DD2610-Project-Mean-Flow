@@ -211,7 +211,9 @@ def run_p_sample_step(p_sample_step, state, sample_idx, latent_manager=None, ema
     samples = latent_manager.decode(samples)
     assert not jnp.any(jnp.isnan(samples)), f"There is nan in decoded samples! Latent range: {samples.min()}, {samples.max()}. nan in latent: {jnp.any(jnp.isnan(samples))}"
     samples = samples.transpose(0, 2, 3, 1) # (B, C, H, W) -> (B, H, W, C)
-  # else: MNIST/direct - samples are already in (B, H, W, C) format
+  else:
+    # MNIST3D/direct - samples are in (B, C, H, W) from sample_step, need to transpose
+    samples = samples.transpose(0, 2, 3, 1) # (B, C, H, W) -> (B, H, W, C)
 
   # Convert from [-1, 1] to [0, 255]
   samples = 127.5 * samples + 128.0
@@ -353,7 +355,12 @@ def train_and_evaluate(
   train_metrics = []
   log_for_0('Initial compilation, this might take some minutes...')
 
-  vis_sample_idx = jax.process_index() * jax.local_device_count() + jnp.arange(jax.local_device_count())
+  # Generate sample indices for 4x4 grid visualization
+  # For pmap, shape must be (n_devices, samples_per_device)
+  n_devices = jax.local_device_count()
+  total_vis_samples = 16  # 4x4 grid
+  samples_per_device = (total_vis_samples + n_devices - 1) // n_devices  # Ceiling division
+  vis_sample_idx = jnp.arange(n_devices * samples_per_device).reshape(n_devices, samples_per_device)
 
   ########### Sampling ###########
   p_sample_step = jax.pmap(
@@ -392,7 +399,11 @@ def train_and_evaluate(
         from PIL import Image
         samples_dir = os.path.join(workdir, 'samples')
         os.makedirs(samples_dir, exist_ok=True)
-        img = Image.fromarray(vis_sample)
+        # vis_sample has shape (bz, h, w, c), take first image or squeeze if grayscale
+        img_array = vis_sample[0] if vis_sample.ndim == 4 else vis_sample
+        if img_array.shape[-1] == 1:  # Grayscale
+          img_array = img_array.squeeze(-1)
+        img = Image.fromarray(img_array)
         img.save(os.path.join(samples_dir, f'epoch_{epoch+1:04d}.png'))
         log_for_0(f'Saved sample image to {samples_dir}/epoch_{epoch+1:04d}.png')
 
