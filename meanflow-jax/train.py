@@ -240,7 +240,7 @@ def train_and_evaluate(
     state = restore_checkpoint(state, config.load_from)
   
   step_offset = int(state.step)
-  epoch_offset = step_offset // steps_per_epoch
+  epoch_offset = 0 if config.eval_only else (step_offset // steps_per_epoch)
   
   state = jax_utils.replicate(state)
   ema_fn = ema_schedules(config)
