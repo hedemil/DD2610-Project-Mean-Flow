@@ -170,7 +170,9 @@ def run_p_sample_step(p_sample_step, state, sample_idx, latent_manager, ema=True
 
 
 def get_fid_evaluator(workdir, config, writer, p_sample_step, latent_manager):
-  inception_net = fid_util.build_jax_inception()
+  # Use smaller batch size for local GPU (50 instead of default 200)
+  inception_batch_size = 50
+  inception_net = fid_util.build_jax_inception(batch_size=inception_batch_size)
   stats_ref = fid_util.get_reference(config.fid.cache_ref, inception_net)
   run_p_sample_step_inner = partial(run_p_sample_step, latent_manager=latent_manager)
   
@@ -180,7 +182,7 @@ def get_fid_evaluator(workdir, config, writer, p_sample_step, latent_manager):
     samples_all = sample_util.generate_fid_samples(
           state, workdir, config, p_sample_step, run_p_sample_step_inner
     )
-    mu, sigma = fid_util.compute_stats(samples_all, inception_net)
+    mu, sigma = fid_util.compute_stats(samples_all, inception_net, batch_size=inception_batch_size)
     fid_score = fid_util.compute_fid(mu, stats_ref["mu"], sigma, stats_ref["sigma"])
     log_for_0(f'FID w/ EMA at {samples_all.shape[0]} samples: {fid_score}')
     
