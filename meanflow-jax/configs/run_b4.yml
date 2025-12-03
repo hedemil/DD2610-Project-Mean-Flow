@@ -2,7 +2,7 @@ model:
     cls: DiT_B_4
 
 dataset:
-    root: /home/emil/KTH/Adv. Deep Learning/Project/DD2610-Project-Mean-Flow/meanflow-jax/data/dummy_data #/home/jupyter/DD2610-Project-Mean-Flow/meanflow-jax/dummy_data
+    root: /home/emil/KTH/Adv. Deep Learning/Project/DD2610-Project-Mean-Flow/meanflow-jax/data/dummy_data 
 
 training:
     log_per_step: 100
@@ -22,8 +22,8 @@ training:
 
 fid:
     device_batch_size: 2  # Reduced for local GPU (was 10)
-    num_samples: 10000  # Reduced for faster local testing (was 50000)
-    cache_ref: /home/emil/KTH/Adv. Deep Learning/Project/DD2610-Project-Mean-Flow/meanflow-jax/imagenet_fid_stats.npz #/home/jupyter/DD2610-Project-Mean-Flow/meanflow-jax/imagenet_fid_stats.npz
+    num_samples: 50000  # Reduced for faster local testing (was 50000)
+    cache_ref: /home/emil/KTH/Adv. Deep Learning/Project/DD2610-Project-Mean-Flow/meanflow-jax/imagenet_fid_stats.npz
     on_training: True
 
 sampling:

@@ -1,0 +1,41 @@
+model:
+    cls: DiT_B_4
+
+dataset:
+    root: /home/jupyter/DD2610-Project-Mean-Flow/meanflow-jax/data/dummy_data #/home/emil/KTH/Adv. Deep Learning/Project/DD2610-Project-Mean-Flow/meanflow-jax/data/dummy_data 
+
+training:
+    log_per_step: 100
+    checkpoint_per_epoch: 10
+
+    num_epochs: 240
+    learning_rate: 0.0001
+    batch_size: 256
+    adam_b2: 0.95
+    ema_type: 'const'
+
+    sample_on_training: True
+    sample_per_epoch: 10
+    fid_per_epoch: 10
+
+    seed: 42
+
+fid:
+    device_batch_size: 32  # Adjust based on GPU memory
+    num_samples: 50000
+    cache_ref: /home/jupyter/DD2610-Project-Mean-Flow/meanflow-jax/imagenet_fid_stats.npz
+    on_training: True
+
+sampling:
+    num_steps: 1
+
+# CRITICAL: CFG guidance settings (paper uses omega=3.0 for best results)
+method:
+    omega: 3.0  # CFG scale = 3.0 (paper Table 1: FID 15.53)
+    kappa: 0.5  # Default from paper
+    guidance_eq: 'cfg'
+
+# Load checkpoints for eval or resuming training.
+load_from: /home/jupyter/DD2610-Project-Mean-Flow/meanflow-jax/checkpoints/mf_b4/checkpoint_1200960
+
+eval_only: True

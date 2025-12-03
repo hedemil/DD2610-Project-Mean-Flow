@@ -1,0 +1,69 @@
+# Training config for limited compute (local GPU)
+# This is a minimal config to demonstrate training capability
+# Not expected to achieve good FID scores due to compute constraints
+
+model:
+    cls: DiT_B_4  # Keep same model architecture
+
+dataset:
+    # IMPORTANT: You need to prepare ImageNet latent dataset first
+    # See README.md for data preparation instructions
+    # For testing, you can use a small subset of data
+    root: /home/emil/KTH/Adv. Deep Learning/Project/DD2610-Project-Mean-Flow/meanflow-jax/data/imagenet_latents_train
+
+training:
+    # Critical: Small batch size for local GPU
+    batch_size: 4  # Reduced from 256. Increase to 8 if you have >8GB VRAM
+
+    # Short training for demonstration
+    num_epochs: 10  # Reduced from 240. Enough to show loss curve
+
+    learning_rate: 0.0001
+    adam_b2: 0.95
+    ema_type: 'const'
+    ema_val: 0.9999
+
+    # Logging and checkpointing
+    log_per_step: 10  # Log every 10 steps (more frequent for short training)
+    checkpoint_per_epoch: 5  # Save checkpoint every 5 epochs
+
+    # Sampling during training (keep minimal)
+    sample_on_training: True
+    sample_per_epoch: 5  # Generate samples every 5 epochs
+
+    # FID evaluation (expensive, do sparingly)
+    fid_per_epoch: 50  # Only at end (epoch 10 won't trigger FID)
+
+    seed: 42
+
+    # Optional: Enable half precision to save memory (may reduce quality)
+    half_precision: false  # Set to true if you still get OOM
+
+fid:
+    # Small batch and sample count for faster evaluation
+    device_batch_size: 2  # Keep same as inference
+    num_samples: 2000  # Reduced from 50000 for faster evaluation
+    cache_ref: /home/emil/KTH/Adv. Deep Learning/Project/DD2610-Project-Mean-Flow/meanflow-jax/imagenet_fid_stats.npz
+    on_training: true  # Enable FID during training
+
+sampling:
+    num_steps: 1  # Single-step sampling
+
+# Don't load checkpoint (train from scratch)
+load_from: null
+eval_only: False
+
+# Method parameters (keep defaults for now)
+method:
+    P_mean: -0.4
+    P_std: 1.0
+    class_dropout_prob: 0.1
+    data_proportion: 0.75
+    guidance_eq: cfg
+    kappa: 0.5
+    noise_dist: logit_normal
+    norm_eps: 0.01
+    norm_p: 1.0
+    omega: 1.0
+    t_end: 1.0
+    t_start: 0.0
