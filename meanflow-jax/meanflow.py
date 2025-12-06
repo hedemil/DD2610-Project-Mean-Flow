@@ -93,7 +93,7 @@ class MeanFlow(nn.Module):
     model_str = self.model_str
 
     net_fn = getattr(models_dit, model_str)
-    self.net = net_fn(name="net", class_dropout_prob=0.0)
+    self.net = net_fn(name="net", class_dropout_prob=0.0, **self.model_config)
 
   #######################################################
   # Solver

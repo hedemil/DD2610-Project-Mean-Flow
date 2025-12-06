@@ -27,7 +27,7 @@ class PatchEmbed(nn.Module):
 
     def __call__(self, x):
         B, H, W, C = x.shape # (2, 32, 32, 4)
-        assert C < 7, f'likely you miss the transpose, get x.shape = {x.shape}'
+        # Note: C < 7 check removed to support 3D data with depth as channels (C=16)
         assert H == self.img_size[0] and W == self.img_size[1], f'input size does not match, input size is {(H, W)}, but self.shape is {self.img_size}'
         x = self.proj(x) # (B, H/p, W/p, hidden_c)
         x = x.reshape(B, -1, x.shape[3])  # NHWC -> NLC

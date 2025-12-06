@@ -1,9 +1,9 @@
 #!/bin/bash
 
 # Configuration for data preparation
-export IMAGENET_ROOT="YOUR_IMAGENET_ROOT"
-export OUTPUT_DIR="YOUR_OUTPUT_DIR"
-export LOG_DIR="YOUR_LOG_DIR"
+export IMAGENET_ROOT="/home/jupyter/gcs/imagenet-jax"
+export OUTPUT_DIR="/home/jupyter/gcs/imagenet-jax-latent"
+export LOG_DIR="/home/jupyter/logs"
 
 # Validate required environment variables
 if [ "$IMAGENET_ROOT" = "YOUR_IMAGENET_ROOT" ] || [ "$OUTPUT_DIR" = "YOUR_OUTPUT_DIR" ] || [ "$LOG_DIR" = "YOUR_LOG_DIR" ]; then
@@ -14,7 +14,7 @@ if [ "$IMAGENET_ROOT" = "YOUR_IMAGENET_ROOT" ] || [ "$OUTPUT_DIR" = "YOUR_OUTPUT
     exit 1
 fi
 
-export BATCH_SIZE=128
+export BATCH_SIZE=${BATCH_SIZE:-128}  # Use environment variable or default to 128
 export VAE_TYPE="mse"
 
 export now=`date '+%Y%m%d_%H%M%S'`
@@ -22,8 +22,8 @@ export salt=`head /dev/urandom | tr -dc a-z0-9 | head -c6`
 export JOBNAME=prepare_data_${now}_${salt}_$1
 export LOG_DIR=$LOG_DIR/$USER/$JOBNAME
 
-sudo mkdir -p ${LOG_DIR}
-sudo chmod 777 -R ${LOG_DIR}
+mkdir -p ${LOG_DIR}
+chmod 777 -R ${LOG_DIR} 2>/dev/null || true
 
 # Image size configuration (common sizes: 256, 512, 1024)
 # Corresponding latent sizes will be: 32x32, 64x64, 128x128
@@ -52,10 +52,10 @@ fi
 echo "=============================================="
 
 python3 prepare_dataset.py \
-    --imagenet_root=\"$IMAGENET_ROOT\" \
-    --output_dir=\"$OUTPUT_DIR\" \
+    --imagenet_root="$IMAGENET_ROOT" \
+    --output_dir="$OUTPUT_DIR" \
     --batch_size=$BATCH_SIZE \
-    --vae_type=\"$VAE_TYPE\" \
+    --vae_type="$VAE_TYPE" \
     --image_size=$IMAGE_SIZE \
     --compute_latent=$COMPUTE_LATENT \
     --compute_fid=$COMPUTE_FID \

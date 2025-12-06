@@ -26,13 +26,14 @@ from utils.info_util import print_params
 from utils.logging_util import Timer, log_for_0
 from utils.vae_util import LatentManager
 from utils.vis_util import make_grid_visualization
+from utils.vis_3d_util import make_3d_grid_visualization
 
 #######################################################
 # Initialize
 #######################################################
 
-def initialized(key, image_size, model):
-  input_shape = (1, image_size, image_size, 4)
+def initialized(key, image_size, model, in_channels=4):
+  input_shape = (1, image_size, image_size, in_channels)
   x = jnp.ones(input_shape)
   t = jnp.ones((1,), dtype=int)
   y = jnp.ones((1,), dtype=int)
@@ -64,8 +65,9 @@ def create_train_state(
   """
 
   rng, rng_init = random.split(rng)
-  
-  _, params = initialized(rng_init, image_size, model)
+
+  in_channels = config.model.get('in_channels', 4)
+  _, params = initialized(rng_init, image_size, model, in_channels=in_channels)
   ema_params = deepcopy(params)
   ema_params = update_ema(ema_params, params, 0)
   print_params(params['net'])
@@ -93,7 +95,7 @@ def compute_metrics(dict_losses):
   return metrics
 
 
-def train_step_with_vae(state, batch, rng_init, config, lr, ema_fn, latent_mnger):
+def train_step_with_vae(state, batch, rng_init, config, lr, ema_fn, latent_mnger, is_3d_data=False):
   """
   Perform a single training step.
   """
@@ -102,7 +104,8 @@ def train_step_with_vae(state, batch, rng_init, config, lr, ema_fn, latent_mnger
 
   cached = batch['image'] # [B, H, W, C]
   rng_base, rng_vae = random.split(rng_base)
-  images = latent_mnger.cached_encode(cached, rng_vae) # [B, H, W, C] sample latent
+  # For 3D data: use deterministic=True to avoid adding noise during sampling
+  images = latent_mnger.cached_encode(cached, rng_vae, deterministic=is_3d_data) # [B, H, W, C] sample latent
 
   labels = batch['label']
 
@@ -152,16 +155,22 @@ def sample_step(variable, sample_idx, model, rng_init, device_batch_size, config
   return images
 
 
-def run_p_sample_step(p_sample_step, state, sample_idx, latent_manager, ema=True):
+def run_p_sample_step(p_sample_step, state, sample_idx, latent_manager, ema=True, skip_vae_decode=False):
   variable = {"params": state.ema_params if ema else state.params}
   latent = p_sample_step(variable, sample_idx=sample_idx)
   latent = latent.reshape(-1, *latent.shape[2:])
 
-  # Decode
-  samples = latent_manager.decode(latent)
-  assert not jnp.any(jnp.isnan(samples)), f"There is nan in decoded samples! Latent range: {latent.min()}, {latent.max()}. nan in latent: {jnp.any(jnp.isnan(latent))}"
+  if skip_vae_decode:
+    # For 3D data: latent IS the actual data, no VAE decoding needed
+    samples = latent
+    # Transpose from (B, C, H, W) to (B, H, W, C)
+    samples = samples.transpose(0, 2, 3, 1)
+  else:
+    # For ImageNet: decode VAE latents to images
+    samples = latent_manager.decode(latent)
+    assert not jnp.any(jnp.isnan(samples)), f"There is nan in decoded samples! Latent range: {latent.min()}, {latent.max()}. nan in latent: {jnp.any(jnp.isnan(latent))}"
+    samples = samples.transpose(0, 2, 3, 1) # (B, C, H, W) -> (B, H, W, C)
 
-  samples = samples.transpose(0, 2, 3, 1) # (B, C, H, W) -> (B, H, W, C)
   samples = 127.5 * samples + 128.0
   samples = jnp.clip(samples, 0, 255).astype(jnp.uint8)
 
@@ -169,12 +178,12 @@ def run_p_sample_step(p_sample_step, state, sample_idx, latent_manager, ema=True
   return samples
 
 
-def get_fid_evaluator(workdir, config, writer, p_sample_step, latent_manager):
+def get_fid_evaluator(workdir, config, writer, p_sample_step, latent_manager, is_3d_data=False):
   # Use smaller batch size for local GPU (50 instead of default 200)
   inception_batch_size = 50
   inception_net = fid_util.build_jax_inception(batch_size=inception_batch_size)
   stats_ref = fid_util.get_reference(config.fid.cache_ref, inception_net)
-  run_p_sample_step_inner = partial(run_p_sample_step, latent_manager=latent_manager)
+  run_p_sample_step_inner = partial(run_p_sample_step, latent_manager=latent_manager, skip_vae_decode=is_3d_data)
   
   def evaluator(state, epoch):
     log_for_0('Eval fid at epoch: {}'.format(epoch))
@@ -228,6 +237,9 @@ def train_and_evaluate(
   model_config = config.model.to_dict()
   model_str = model_config.pop('cls')
 
+  log_for_0(f'Model config: {model_config}')
+  log_for_0(f'Model class: {model_str}')
+
   model = MeanFlow(
     model_str=model_str,
     model_config=model_config,
@@ -247,16 +259,21 @@ def train_and_evaluate(
   state = jax_utils.replicate(state)
   ema_fn = ema_schedules(config)
 
+  # Detect if we're using 3D data (no VAE decoding needed)
+  is_3d_data = '3d' in config.dataset.name.lower() or config.model.get('in_channels', 4) > 4
+  log_for_0(f'3D data mode: {is_3d_data} (skip VAE decode)')
+
   latent_manager = LatentManager(config.dataset.vae, config.fid.device_batch_size, image_size)
 
   p_train_step = jax.pmap(
       partial(
-        train_step_with_vae, 
-        rng_init=rng, 
-        config=config, 
+        train_step_with_vae,
+        rng_init=rng,
+        config=config,
         lr=base_lr,
         ema_fn=ema_fn,
         latent_mnger=latent_manager,
+        is_3d_data=is_3d_data,
       ),
       axis_name='batch',
   )
@@ -277,7 +294,7 @@ def train_and_evaluate(
   )
 
   if config.fid.on_training:
-    fid_evaluator = get_fid_evaluator(workdir, config, writer, p_sample_step, latent_manager)
+    fid_evaluator = get_fid_evaluator(workdir, config, writer, p_sample_step, latent_manager, is_3d_data)
 
   if config.eval_only:
     fid_evaluator(state, epoch_offset)
@@ -289,12 +306,13 @@ def train_and_evaluate(
     if jax.process_count() > 1:
       train_loader.sampler.set_epoch(epoch)
     log_for_0('epoch {}...'.format(epoch))
-    
+
     ########### Sampling ###########
     if (epoch+1) % config.training.sample_per_epoch == 0 and config.training.get('sample_on_training', True):
       log_for_0(f'Samples at epoch {epoch}...')
-      vis_sample = run_p_sample_step(p_sample_step, state, vis_sample_idx, latent_manager)
-      vis_sample = make_grid_visualization(vis_sample, grid=4)
+      vis_sample = run_p_sample_step(p_sample_step, state, vis_sample_idx, latent_manager, skip_vae_decode=is_3d_data)
+      vis_sample = make_3d_grid_visualization(vis_sample, grid=4) if is_3d_data else make_grid_visualization(vis_sample, grid=4)
+
       writer.write_images(epoch+1, {'vis_sample': vis_sample})
       writer.flush()
 

@@ -1,22 +1,25 @@
-# Training config for limited compute (local GPU)
-# This is a minimal config to demonstrate training capability
-# Not expected to achieve good FID scores due to compute constraints
+# Training config for ImageNet-100 on GCP
+# This config works for both local and GCP training
 
 model:
     cls: DiT_B_4  # Keep same model architecture
 
 dataset:
     # IMPORTANT: You need to prepare ImageNet latent dataset first
-    # See README.md for data preparation instructions
-    # For testing, you can use a small subset of data
-    root: /home/emil/KTH/Adv. Deep Learning/Project/DD2610-Project-Mean-Flow/meanflow-jax/data/imagenet_latents_train
+    # See README.md or GCP_TRAINING_GUIDE.md for data preparation
+    # The code automatically appends '/train' to this path
+    name: imagenet_latent  # Contains 'latent' so uses LatentDataset
+    root: /home/jupyter/gcs/imagenet-jax-latent  # Parent folder (train/ will be appended)
+    image_size: 32  # Latent size for model initialization
+    image_channels: 4  # Latent channels after VAE encoding
+    num_classes: 100  # ImageNet-100 has 100 classes
 
 training:
-    # Critical: Small batch size for local GPU
-    batch_size: 4  # Reduced from 256. Increase to 8 if you have >8GB VRAM
+    # Batch size - adjust based on your GPU
+    batch_size: 16  # For GCP GPU. Use 4-8 for local GPU with limited VRAM
 
-    # Short training for demonstration
-    num_epochs: 10  # Reduced from 240. Enough to show loss curve
+    # Training duration
+    num_epochs: 10  # Increase to 240 for full training
 
     learning_rate: 0.0001
     adam_b2: 0.95
@@ -43,11 +46,12 @@ fid:
     # Small batch and sample count for faster evaluation
     device_batch_size: 2  # Keep same as inference
     num_samples: 2000  # Reduced from 50000 for faster evaluation
-    cache_ref: /home/emil/KTH/Adv. Deep Learning/Project/DD2610-Project-Mean-Flow/meanflow-jax/imagenet_fid_stats.npz
+    cache_ref: /home/jupyter/DD2610-Project-Mean-Flow/meanflow-jax/imagenet_fid_stats.npz
     on_training: true  # Enable FID during training
 
 sampling:
     num_steps: 1  # Single-step sampling
+    num_classes: 100  # Override default 1000 -> 100 for ImageNet-100
 
 # Don't load checkpoint (train from scratch)
 load_from: null
