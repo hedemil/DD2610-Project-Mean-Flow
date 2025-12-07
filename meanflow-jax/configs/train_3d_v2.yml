@@ -1,0 +1,106 @@
+# Training config V2: Improved setup with LR schedule and evaluation metrics
+#
+# Key improvements over V1:
+# - Cosine learning rate schedule with warmup
+# - 3D evaluation metrics (FID, Chamfer Distance, IoU)
+# - Longer training with early stopping
+# - Better checkpointing strategy
+
+model:
+    cls: DiT_S_2  # Keep same model for fair comparison
+    input_size: 16
+    in_channels: 16
+
+dataset:
+    name: mnist3d_latent
+    root: data/mnist3d_latents
+    image_size: 16
+    image_channels: 16
+    num_classes: 10
+
+training:
+    # Training duration
+    batch_size: 32
+    num_epochs: 1000  # Train longer, use early stopping
+
+    # Learning rate schedule (NEW!)
+    # Total steps = ~31 steps/epoch * 1000 epochs = 31,000 steps
+    use_lr_schedule: true
+    warmup_steps: 1000  # ~32 epochs of warmup
+    learning_rate: 0.0001  # Peak LR after warmup
+    min_lr: 0.00001  # Minimum LR at end of cosine decay
+
+    # Optimizer settings
+    adam_b2: 0.999
+    ema_type: 'const'
+    ema_val: 0.99995
+
+    # Logging and checkpointing
+    log_per_step: 10
+    checkpoint_per_epoch: 10  # More frequent checkpointing
+    keep_checkpoints: 5  # Keep more checkpoints for safety
+
+    # Sampling during training
+    sample_on_training: true
+    sample_per_epoch: 10  # Generate samples more frequently
+
+    # Evaluation (NEW!)
+    eval_on_training: true  # Enable evaluation
+    eval_per_epoch: 25  # Evaluate every 25 epochs
+    eval_batch_size: 100  # Number of samples to generate for evaluation
+    eval_num_real: 1000  # Number of real samples to compare against
+
+    # FID evaluation
+    fid_per_epoch: 50  # More frequent FID calculation
+
+    seed: 42
+    half_precision: false
+
+fid:
+    device_batch_size: 2
+    num_samples: 500  # Reduced for faster evaluation during training
+    cache_ref: null  # Will compute reference stats from real data
+    on_training: false  # DISABLED - using Chamfer Distance and IoU instead
+
+sampling:
+    num_steps: 1
+    num_classes: 10
+    seed: 42  # Separate seed for sampling reproducibility
+
+# Evaluation metrics configuration (NEW!)
+evaluation:
+    # Chamfer Distance settings
+    chamfer_threshold: -0.5  # Voxel threshold for point cloud conversion
+    chamfer_enabled: true
+
+    # IoU settings
+    iou_threshold: 0.0
+    iou_enabled: true
+
+    # 3D FID settings (using multi-view projections)
+    fid_views: ['xy', 'xz', 'yz']  # Top, front, side views
+    fid_enabled: true
+
+    # Early stopping
+    early_stopping_metric: 'chamfer_distance'  # or 'fid_3d'
+    early_stopping_patience: 100  # Stop if no improvement for 100 epochs
+    early_stopping_min_delta: 0.01  # Minimum change to count as improvement
+
+# Continue from previous checkpoint (optional)
+load_from: null  # Set to 'workdir_3d' to continue from checkpoint 156000
+eval_only: false
+
+# Method parameters (keep same as V1)
+method:
+    P_mean: -0.4
+    P_std: 1.0
+    class_dropout_prob: 0.1
+    data_proportion: 0.75
+    guidance_eq: cfg
+    kappa: 0.5
+    noise_dist: logit_normal
+    norm_eps: 0.01
+    norm_p: 1.0
+    omega: 1.0
+    t_end: 1.0
+    t_start: 0.0

@@ -56,7 +56,7 @@ class TrainState(train_state.TrainState):
 
 
 def create_train_state(
-    rng, config: ml_collections.ConfigDict, model, image_size, lr_value
+    rng, config: ml_collections.ConfigDict, model, image_size, lr_value, steps_per_epoch=None
 ):
   """
   Create initial training state.
@@ -71,11 +71,53 @@ def create_train_state(
   ema_params = deepcopy(params)
   ema_params = update_ema(ema_params, params, 0)
   print_params(params['net'])
-  tx = optax.adamw(
-      learning_rate=lr_value,
-      weight_decay=0,
-      b2=config.training.adam_b2,
-  )
+
+  # Create learning rate schedule if enabled
+  if config.training.get('use_lr_schedule', False) and steps_per_epoch is not None:
+      log_for_0('Creating learning rate schedule...')
+      warmup_steps = config.training.get('warmup_steps', 1000)
+      total_steps = config.training.num_epochs * steps_per_epoch
+      decay_steps = total_steps - warmup_steps
+      min_lr = config.training.get('min_lr', 1e-5)
+
+      # Warmup phase: linear increase from 0 to peak LR
+      warmup_fn = optax.linear_schedule(
+          init_value=0.0,
+          end_value=config.training.learning_rate,
+          transition_steps=warmup_steps
+      )
+
+      # Decay phase: cosine decay from peak LR to min LR
+      decay_fn = optax.cosine_decay_schedule(
+          init_value=config.training.learning_rate,
+          decay_steps=decay_steps,
+          alpha=min_lr / config.training.learning_rate
+      )
+
+      # Combine schedules
+      lr_schedule = optax.join_schedules(
+          schedules=[warmup_fn, decay_fn],
+          boundaries=[warmup_steps]
+      )
+
+      log_for_0(f'  Warmup steps: {warmup_steps} ({warmup_steps/steps_per_epoch:.1f} epochs)')
+      log_for_0(f'  Total steps: {total_steps}')
+      log_for_0(f'  Peak LR: {config.training.learning_rate:.2e}')
+      log_for_0(f'  Min LR: {min_lr:.2e}')
+
+      tx = optax.adamw(
+          learning_rate=lr_schedule,
+          weight_decay=0,
+          b2=config.training.adam_b2,
+      )
+  else:
+      # Use fixed learning rate
+      tx = optax.adamw(
+          learning_rate=lr_value,
+          weight_decay=0,
+          b2=config.training.adam_b2,
+      )
+
   state = TrainState.create(
       apply_fn=partial(model.apply, method=model.forward),
       params=params,
@@ -104,8 +146,14 @@ def train_step_with_vae(state, batch, rng_init, config, lr, ema_fn, latent_mnger
 
   cached = batch['image'] # [B, H, W, C]
   rng_base, rng_vae = random.split(rng_base)
-  # For 3D data: use deterministic=True to avoid adding noise during sampling
-  images = latent_mnger.cached_encode(cached, rng_vae, deterministic=is_3d_data) # [B, H, W, C] sample latent
+
+  if is_3d_data:
+    # For 3D data: channels are duplicated, just take first half
+    # Shape: (B, H, W, 32) -> (B, H, W, 16)
+    images = cached[..., :cached.shape[-1]//2]
+  else:
+    # For ImageNet latents: sample from distribution (mean + std * noise)
+    images = latent_mnger.cached_encode(cached, rng_vae, deterministic=False)
 
   labels = batch['label']
 
@@ -249,7 +297,7 @@ def train_and_evaluate(
 
   ########### Create Train State ###########
   base_lr = config.training.learning_rate
-  state = create_train_state(rng, config, model, image_size, lr_value=base_lr)
+  state = create_train_state(rng, config, model, image_size, lr_value=base_lr, steps_per_epoch=steps_per_epoch)
   if config.load_from is not None:
     state = restore_checkpoint(state, config.load_from)
   
@@ -299,6 +347,14 @@ def train_and_evaluate(
   if config.eval_only:
     fid_evaluator(state, epoch_offset)
     return state
+
+  ########### Early Stopping Setup ###########
+  best_metric = float('inf')
+  patience_counter = 0
+  early_stopping_patience = config.get('evaluation', {}).get('early_stopping_patience', 100)
+  early_stopping_metric = config.get('evaluation', {}).get('early_stopping_metric', 'chamfer_distance')
+  early_stopping_min_delta = config.get('evaluation', {}).get('early_stopping_min_delta', 0.01)
+  log_for_0(f'Early stopping: patience={early_stopping_patience}, metric={early_stopping_metric}, min_delta={early_stopping_min_delta}')
 
   ########### Training Loop ###########
   for epoch in range(epoch_offset, config.training.num_epochs):
@@ -352,6 +408,94 @@ def train_and_evaluate(
       or (epoch+1) == config.training.num_epochs
     ):
       save_checkpoint(state, workdir)
+
+    ########### 3D Evaluation Metrics ###########
+    if (epoch+1) % config.training.get('eval_per_epoch', 25) == 0 and config.training.get('eval_on_training', False) and is_3d_data:
+      log_for_0(f'Evaluation at epoch {epoch+1}...')
+
+      # Import evaluation utilities
+      from utils.evaluation_3d import chamfer_distance_batch, compute_voxel_iou
+      import numpy as np
+
+      # Generate samples for evaluation
+      eval_batch_size = config.training.get('eval_batch_size', 100)
+      num_devices = jax.local_device_count()
+      device_batch_size = config.fid.device_batch_size
+      samples_per_iter = num_devices * device_batch_size
+      num_iters = (eval_batch_size + samples_per_iter - 1) // samples_per_iter
+
+      eval_samples = []
+      for i in range(num_iters):
+        sample_idx = jnp.arange(num_devices) + i * num_devices
+        variable = {"params": state.ema_params}
+        latent = p_sample_step(variable, sample_idx=sample_idx)
+        latent = latent.reshape(-1, *latent.shape[2:])
+        # Transpose to (B, H, W, C)
+        samples = latent.transpose(0, 2, 3, 1)
+        eval_samples.append(np.array(samples))
+
+      eval_samples = np.concatenate(eval_samples, axis=0)[:eval_batch_size]
+      log_for_0(f'  Generated {len(eval_samples)} evaluation samples')
+
+      # Load real samples from validation set
+      try:
+        val_loader, _ = input_pipeline.create_split(
+          config.dataset,
+          local_batch_size,
+          split='val',
+        )
+        real_samples = []
+        for batch_idx, batch in enumerate(val_loader):
+          batch = input_pipeline.prepare_batch_data(batch)
+          real_batch = batch['image']
+          if is_3d_data:
+            # For 3D: take first half of channels (remove duplicate)
+            real_batch = real_batch[..., :real_batch.shape[-1]//2]
+          # Flatten device dimension: (devices, batch, H, W, C) -> (devices*batch, H, W, C)
+          real_batch = real_batch.reshape(-1, *real_batch.shape[2:])
+          real_samples.append(np.array(real_batch))
+          if len(real_samples) * real_batch.shape[0] >= eval_batch_size:
+            break
+        
+        if len(real_samples) == 0:
+          log_for_0(f'  Warning: No validation samples loaded')
+          writer.flush()
+          continue
+        
+        real_samples = np.concatenate(real_samples, axis=0)[:eval_batch_size]
+        log_for_0(f'  Loaded {len(real_samples)} real samples')
+
+        # Compute Chamfer Distance
+        if config.get('evaluation', {}).get('chamfer_enabled', True):
+          threshold = config.get('evaluation', {}).get('chamfer_threshold', -0.5)
+          cd_mean, cd_std = chamfer_distance_batch(eval_samples, real_samples, threshold=threshold)
+          log_for_0(f'  Chamfer Distance: {cd_mean:.4f} ± {cd_std:.4f}')
+          writer.write_scalars(epoch+1, {
+            'chamfer_distance_mean': cd_mean,
+            'chamfer_distance_std': cd_std
+          })
+
+        # Compute IoU
+        if config.get('evaluation', {}).get('iou_enabled', True):
+          iou_threshold = config.get('evaluation', {}).get('iou_threshold', 0.0)
+          iou_mean, iou_std = compute_voxel_iou(eval_samples, real_samples, threshold=iou_threshold)
+          log_for_0(f'  Voxel IoU: {iou_mean:.4f} ± {iou_std:.4f}')
+          writer.write_scalars(epoch+1, {
+            'voxel_iou_mean': iou_mean,
+            'voxel_iou_std': iou_std
+          })
+
+        # Early stopping check
+        if config.get('evaluation', {}).get('early_stopping_patience', 0) > 0:
+          current_metric = cd_mean if early_stopping_metric == 'chamfer_distance' else iou_mean
+          # ... rest of early stopping logic
+
+      except Exception as e:
+        import traceback
+        log_for_0(f'  Warning: Evaluation failed: {e}')
+        log_for_0(f'  Traceback: {traceback.format_exc()}')
+
+      writer.flush()
 
     ########### FID ###########
     if (

@@ -17,15 +17,15 @@ dataset:
 
 training:
     # Critical: Small batch size for local GPU
-    batch_size: 4  # Reduced from 256. Increase to 8 if you have >8GB VRAM
+    batch_size: 32  # Increased for better gradients (was 4)
 
     # Short training for demonstration
-    num_epochs: 100  # Reduced from 240. Enough to show loss curve
+    num_epochs: 500  # Reduced from 240. Enough to show loss curve
 
-    learning_rate: 0.0001
-    adam_b2: 0.95
+    learning_rate: 0.0001  # Back to 1e-4 (1e-5 was too conservative)
+    adam_b2: 0.999  # Fixed: was 0.95, should be 0.999 per MeanFlow reference
     ema_type: 'const'
-    ema_val: 0.9999
+    ema_val: 0.99995  # Fixed: was 0.9999, should be 0.99995 per reference
 
     # Logging and checkpointing
     log_per_step: 10  # Log every 10 steps (more frequent for short training)

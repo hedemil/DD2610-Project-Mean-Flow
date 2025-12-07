@@ -1,0 +1,93 @@
+# Quick test config: Validate V2 improvements in ~30 minutes
+# This is a shortened version of train_3d_v2.yml for testing
+
+model:
+    cls: DiT_S_2
+    input_size: 16
+    in_channels: 16
+
+dataset:
+    name: mnist3d_latent
+    root: data/mnist3d_latents
+    image_size: 16
+    image_channels: 16
+    num_classes: 10
+
+training:
+    # Short training for testing
+    batch_size: 32
+    num_epochs: 50  # Quick test: 50 epochs (~10 minutes)
+
+    # Learning rate schedule (TESTING)
+    use_lr_schedule: true
+    warmup_steps: 100  # ~3 epochs warmup
+    learning_rate: 0.0001
+    min_lr: 0.00001
+
+    # Optimizer
+    adam_b2: 0.999
+    ema_type: 'const'
+    ema_val: 0.99995
+
+    # Frequent logging for testing
+    log_per_step: 5
+    checkpoint_per_epoch: 10
+    keep_checkpoints: 3
+
+    # Sampling
+    sample_on_training: true
+    sample_per_epoch: 5
+
+    # Evaluation (TESTING)
+    eval_on_training: true
+    eval_per_epoch: 1  # Evaluate every epoch for faster debugging
+    eval_batch_size: 50  # Smaller for faster testing
+    eval_num_real: 50
+
+    # FID (disabled for quick test)
+    fid_per_epoch: 100  # Won't trigger in 50 epochs
+
+    seed: 42
+    half_precision: false
+
+fid:
+    device_batch_size: 2
+    num_samples: 100
+    cache_ref: null
+    on_training: false  # Disabled for quick test
+
+sampling:
+    num_steps: 1
+    num_classes: 10
+    seed: 42
+
+# Evaluation metrics (TESTING)
+evaluation:
+    chamfer_threshold: -0.5
+    chamfer_enabled: true
+    iou_threshold: 0.0
+    iou_enabled: true
+    fid_views: ['xy', 'xz', 'yz']
+    fid_enabled: false  # Disabled for quick test
+
+    # Early stopping (disabled for quick test)
+    early_stopping_metric: 'chamfer_distance'
+    early_stopping_patience: 100  # Won't trigger in 50 epochs
+    early_stopping_min_delta: 0.01
+
+load_from: null
+eval_only: false
+
+method:
+    P_mean: -0.4
+    P_std: 1.0
+    class_dropout_prob: 0.1
+    data_proportion: 0.75
+    guidance_eq: cfg
+    kappa: 0.5
+    noise_dist: logit_normal
+    norm_eps: 0.01
+    norm_p: 1.0
+    omega: 1.0
+    t_end: 1.0
+    t_start: 0.0

@@ -38,11 +38,27 @@ def get_config():
   training.checkpoint_per_epoch = 10
   training.fid_per_epoch = 10
   training.half_precision = False
-  
+
   training.seed = 42
 
   training.adam_b2 = 0.95
   training.ema_val = 0.9999
+  training.ema_type = 'const'
+
+  # Learning rate schedule
+  training.use_lr_schedule = False
+  training.warmup_steps = 1000
+  training.min_lr = 0.00001
+
+  # Evaluation during training
+  training.eval_on_training = False
+  training.eval_per_epoch = 25
+  training.eval_batch_size = 100
+  training.eval_num_real = 1000
+
+  # Sampling and checkpointing
+  training.sample_on_training = False
+  training.keep_checkpoints = 3
 
   # ------------------------------------------------------------
   # MeanFlow
@@ -91,6 +107,19 @@ def get_config():
   fid.num_samples = 50000
   fid.device_batch_size = 128
   fid.cache_ref = 'FID_CACHE_REF'
+
+  # ------------------------------------------------------------
+  # Evaluation (for 3D metrics)
+  config.evaluation = evaluation = ml_collections.ConfigDict()
+  evaluation.chamfer_threshold = -0.5
+  evaluation.chamfer_enabled = False
+  evaluation.iou_threshold = 0.0
+  evaluation.iou_enabled = False
+  evaluation.fid_views = ['xy', 'xz', 'yz']
+  evaluation.fid_enabled = False
+  evaluation.early_stopping_metric = 'chamfer_distance'
+  evaluation.early_stopping_patience = 100
+  evaluation.early_stopping_min_delta = 0.01
 
   # others
   config.load_from = None
