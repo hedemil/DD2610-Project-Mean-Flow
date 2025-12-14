@@ -1,13 +1,29 @@
-# Training config V2: Improved setup with LR schedule and evaluation metrics
+# Training Config V2: NO VELOCITY MATCHING ABLATION
 #
-# Key improvements over V1:
-# - Cosine learning rate schedule with warmup
-# - 3D evaluation metrics (FID, Chamfer Distance, IoU)
-# - Longer training with early stopping
-# - Better checkpointing strategy
+# Research Question: Is velocity matching necessary for MeanFlow's performance?
+#
+# ABLATION: Remove velocity matching entirely
+# - V1 (baseline): 75% data matching (r=t), 25% velocity matching (r≠t)
+# - V2 (this):     100% data matching (r=t), 0% velocity matching
+#
+# Background:
+# MeanFlow's key innovation is combining two training objectives:
+# 1. Data matching (r=t): Train to denoise from timestep t to t
+# 2. Velocity matching (r≠t): Train to learn the velocity field between timesteps
+#
+# The paper uses 75/25 split. This tests pure data matching (100/0).
+#
+# Hypothesis:
+# Velocity matching helps the model learn better flow structure.
+# Removing it should hurt performance, validating MeanFlow's core innovation.
+#
+# Expected Results:
+# - Worse IoU than V1 (validates velocity matching is important)
+# - Possibly higher v_loss or training instability
+# - Demonstrates that MeanFlow's mixed objective is beneficial
 
 model:
-    cls: DiT_S_2  # Keep same model for fair comparison
+    cls: DiT_S_4
     input_size: 16
     in_channels: 16
 
@@ -19,88 +35,74 @@ dataset:
     num_classes: 10
 
 training:
-    # Training duration
-    batch_size: 32
-    num_epochs: 1000  # Train longer, use early stopping
-
-    # Learning rate schedule (NEW!)
-    # Total steps = ~31 steps/epoch * 1000 epochs = 31,000 steps
-    use_lr_schedule: true
-    warmup_steps: 1000  # ~32 epochs of warmup
-    learning_rate: 0.0001  # Peak LR after warmup
-    min_lr: 0.00001  # Minimum LR at end of cosine decay
-
-    # Optimizer settings
+    # Keep EXACTLY the same as V1
+    batch_size: 64
+    num_epochs: 500
+    learning_rate: 0.0001
     adam_b2: 0.999
     ema_type: 'const'
     ema_val: 0.99995
 
     # Logging and checkpointing
     log_per_step: 10
-    checkpoint_per_epoch: 10  # More frequent checkpointing
-    keep_checkpoints: 5  # Keep more checkpoints for safety
+    checkpoint_per_epoch: 25
+    keep_checkpoints: 5
 
     # Sampling during training
     sample_on_training: true
-    sample_per_epoch: 10  # Generate samples more frequently
+    sample_per_epoch: 5
 
-    # Evaluation (NEW!)
-    eval_on_training: true  # Enable evaluation
-    eval_per_epoch: 25  # Evaluate every 25 epochs
-    eval_batch_size: 100  # Number of samples to generate for evaluation
-    eval_num_real: 1000  # Number of real samples to compare against
-
-    # FID evaluation
-    fid_per_epoch: 50  # More frequent FID calculation
+    # Evaluation
+    eval_on_training: true
+    eval_per_epoch: 25
+    eval_batch_size: 100
+    eval_num_real: 100
 
     seed: 42
     half_precision: false
 
-fid:
-    device_batch_size: 2
-    num_samples: 500  # Reduced for faster evaluation during training
-    cache_ref: null  # Will compute reference stats from real data
-    on_training: false  # DISABLED - using Chamfer Distance and IoU instead
-
 sampling:
     num_steps: 1
     num_classes: 10
-    seed: 42  # Separate seed for sampling reproducibility
+    seed: 42
 
-# Evaluation metrics configuration (NEW!)
 evaluation:
-    # Chamfer Distance settings
-    chamfer_threshold: -0.5  # Voxel threshold for point cloud conversion
+    chamfer_threshold: -0.5
     chamfer_enabled: true
-
-    # IoU settings
-    iou_threshold: 0.0
+    iou_threshold: -0.5
     iou_enabled: true
+    fid_views: ['xy', 'xz', 'yz']
+    fid_enabled: false
+    early_stopping_metric: 'chamfer_distance'
+    early_stopping_patience: 50
+    early_stopping_min_delta: 0.01
 
-    # 3D FID settings (using multi-view projections)
-    fid_views: ['xy', 'xz', 'yz']  # Top, front, side views
-    fid_enabled: true
+load_from: null
+eval_only: False
 
-    # Early stopping
-    early_stopping_metric: 'chamfer_distance'  # or 'fid_3d'
-    early_stopping_patience: 100  # Stop if no improvement for 100 epochs
-    early_stopping_min_delta: 0.01  # Minimum change to count as improvement
-
-# Continue from previous checkpoint (optional)
-load_from: null  # Set to 'workdir_3d' to continue from checkpoint 156000
-eval_only: false
-
-# Method parameters (keep same as V1)
+# MeanFlow method parameters
 method:
+    # Time sampling - same as V1
+    noise_dist: logit_normal
     P_mean: -0.4
     P_std: 1.0
+
+    # ===== ABLATION: NO VELOCITY MATCHING =====
+    data_proportion: 1.0  # CHANGED: 0.75 → 1.0 (100% data, 0% velocity)
+
+    # All other parameters IDENTICAL to V1
     class_dropout_prob: 0.1
-    data_proportion: 0.75
     guidance_eq: cfg
     kappa: 0.5
-    noise_dist: logit_normal
     norm_eps: 0.01
     norm_p: 1.0
-    omega: 1.0
+    omega: 1.0  # SAME as V1 (not 3.0!)
     t_end: 1.0
     t_start: 0.0
+
+# Discussion for Report:
+#
+# This ablation validates MeanFlow's core contribution:
+# - If V2 performs worse than V1, velocity matching is crucial
+# - If V2 performs similarly, the 75/25 split may not matter for 3D MNIST
+# - Compare v_loss between V1 and V2 (V2 should have lower/zero v_loss)

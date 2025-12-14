@@ -39,66 +39,109 @@ def voxels_to_point_cloud(voxels: jnp.ndarray, threshold: float = 0.0) -> jnp.nd
         raise ValueError(f"Expected 3D or 4D voxel grid, got shape {voxels.shape}")
 
 
-def chamfer_distance_single(pc1: jnp.ndarray, pc2: jnp.ndarray) -> float:
+def chamfer_distance_single(pc1: jnp.ndarray, pc2: jnp.ndarray, normalize: bool = True) -> float:
     """Compute Chamfer Distance between two point clouds.
 
-    Chamfer Distance = mean(min_dist(pc1→pc2)) + mean(min_dist(pc2→pc1))
+    Chamfer Distance = (mean(min_dist(pc1→pc2)) + mean(min_dist(pc2→pc1))) / 2
 
     Args:
         pc1: Point cloud 1 of shape (N1, 3)
         pc2: Point cloud 2 of shape (N2, 3)
+        normalize: If True, normalize coordinates to [0, 1]
 
     Returns:
         Chamfer distance (scalar)
     """
-    # Compute pairwise distances: (N1, N2)
-    dists_1_to_2 = jnp.linalg.norm(pc1[:, None, :] - pc2[None, :, :], axis=2)
-    dists_2_to_1 = dists_1_to_2.T
-
+    if normalize:
+        # Normalize coordinates to [0, 1] range for each point cloud independently
+        pc1_min, pc1_max = pc1.min(axis=0), pc1.max(axis=0)
+        pc2_min, pc2_max = pc2.min(axis=0), pc2.max(axis=0)
+        
+        # Avoid division by zero
+        pc1_range = pc1_max - pc1_min
+        pc2_range = pc2_max - pc2_min
+        pc1_range = jnp.where(pc1_range == 0, 1, pc1_range)
+        pc2_range = jnp.where(pc2_range == 0, 1, pc2_range)
+        
+        pc1 = (pc1 - pc1_min) / pc1_range
+        pc2 = (pc2 - pc2_min) / pc2_range
+    
+    # Compute pairwise squared distances: (N1, N2)
+    dists_sq = jnp.sum((pc1[:, None, :] - pc2[None, :, :]) ** 2, axis=2)
+    
     # For each point in pc1, find nearest point in pc2
-    min_dists_1_to_2 = jnp.min(dists_1_to_2, axis=1)
-
+    min_dists_sq_1_to_2 = jnp.min(dists_sq, axis=1)
+    
     # For each point in pc2, find nearest point in pc1
-    min_dists_2_to_1 = jnp.min(dists_2_to_1, axis=1)
-
-    # Chamfer distance is the mean of both directions
-    chamfer = jnp.mean(min_dists_1_to_2) + jnp.mean(min_dists_2_to_1)
-
+    min_dists_sq_2_to_1 = jnp.min(dists_sq, axis=0)
+    
+    # Chamfer distance: average of both directions, then take sqrt
+    chamfer = (jnp.mean(min_dists_sq_1_to_2) + jnp.mean(min_dists_sq_2_to_1)) / 2.0
+    chamfer = jnp.sqrt(chamfer)
+    
     return float(chamfer)
 
 
 def chamfer_distance_batch(generated_voxels: np.ndarray,
                            real_voxels: np.ndarray,
-                           threshold: float = 0.0) -> Tuple[float, float]:
+                           generated_labels: Optional[np.ndarray] = None,
+                           real_labels: Optional[np.ndarray] = None,
+                           threshold: float = 0.0,
+                           class_aligned: bool = True) -> Tuple[float, float]:
     """Compute Chamfer Distance between batches of generated and real voxel grids.
 
     Args:
         generated_voxels: Generated voxels of shape (B, H, W, D)
         real_voxels: Real voxels of shape (B, H, W, D)
+        generated_labels: Optional labels for generated samples (B,)
+        real_labels: Optional labels for real samples (B,)
         threshold: Voxel threshold for point cloud conversion
+        class_aligned: If True and labels provided, compare only within same class
 
     Returns:
         (mean_chamfer, std_chamfer): Mean and std of Chamfer distances
     """
-    assert generated_voxels.shape == real_voxels.shape, \
-        f"Shape mismatch: {generated_voxels.shape} vs {real_voxels.shape}"
-
-    batch_size = generated_voxels.shape[0]
     chamfer_distances = []
 
-    for i in range(batch_size):
-        # Convert to point clouds
-        gen_pc = voxels_to_point_cloud(generated_voxels[i], threshold)
-        real_pc = voxels_to_point_cloud(real_voxels[i], threshold)
+    # Class-aligned comparison (RECOMMENDED)
+    if class_aligned and generated_labels is not None and real_labels is not None:
+        num_classes = max(generated_labels.max(), real_labels.max()) + 1
 
-        # Skip if either point cloud is empty
-        if len(gen_pc) == 0 or len(real_pc) == 0:
-            print(f"Warning: Empty point cloud at index {i}, skipping")
-            continue
+        for cls in range(num_classes):
+            gen_mask = generated_labels == cls
+            real_mask = real_labels == cls
 
-        # Compute Chamfer distance
-        cd = chamfer_distance_single(gen_pc, real_pc)
-        chamfer_distances.append(cd)
+            gen_cls = generated_voxels[gen_mask]
+            real_cls = real_voxels[real_mask]
+
+            if len(gen_cls) == 0 or len(real_cls) == 0:
+                continue
+
+            # Compare pairs within class
+            num_pairs = min(len(gen_cls), len(real_cls))
+            for i in range(num_pairs):
+                gen_pc = voxels_to_point_cloud(gen_cls[i], threshold)
+                real_pc = voxels_to_point_cloud(real_cls[i], threshold)
+
+                if len(gen_pc) > 0 and len(real_pc) > 0:
+                    cd = chamfer_distance_single(gen_pc, real_pc, normalize=True)
+                    chamfer_distances.append(cd)
+
+    # Simple batch comparison (legacy)
+    else:
+        assert generated_voxels.shape == real_voxels.shape, \
+            f"Shape mismatch: {generated_voxels.shape} vs {real_voxels.shape}"
+
+        batch_size = generated_voxels.shape[0]
+        for i in range(batch_size):
+            gen_pc = voxels_to_point_cloud(generated_voxels[i], threshold)
+            real_pc = voxels_to_point_cloud(real_voxels[i], threshold)
+
+            if len(gen_pc) == 0 or len(real_pc) == 0:
+                continue
+
+            cd = chamfer_distance_single(gen_pc, real_pc, normalize=True)
+            chamfer_distances.append(cd)
 
     if len(chamfer_distances) == 0:
         return float('nan'), float('nan')
@@ -134,26 +177,54 @@ def compute_voxel_iou_single(voxels1: np.ndarray,
 
 def compute_voxel_iou(voxels1: np.ndarray,
                       voxels2: np.ndarray,
-                      threshold: float = 0.0) -> tuple:
+                      labels1: Optional[np.ndarray] = None,
+                      labels2: Optional[np.ndarray] = None,
+                      threshold: float = 0.0,
+                      class_aligned: bool = True) -> tuple:
     """Compute Intersection over Union between batches of voxel grids.
 
     Args:
         voxels1: First batch of voxel grids of shape (B, H, W, D)
         voxels2: Second batch of voxel grids of shape (B, H, W, D)
+        labels1: Optional labels for first batch (B,)
+        labels2: Optional labels for second batch (B,)
         threshold: Voxel values above this are considered "on"
+        class_aligned: If True and labels provided, compare only within same class
 
     Returns:
         Tuple of (mean_iou, std_iou)
     """
-    assert voxels1.shape == voxels2.shape, \
-        f"Shape mismatch: {voxels1.shape} vs {voxels2.shape}"
-
-    batch_size = voxels1.shape[0]
     iou_scores = []
 
-    for i in range(batch_size):
-        iou = compute_voxel_iou_single(voxels1[i], voxels2[i], threshold)
-        iou_scores.append(iou)
+    # Class-aligned comparison (RECOMMENDED)
+    if class_aligned and labels1 is not None and labels2 is not None:
+        num_classes = max(labels1.max(), labels2.max()) + 1
+
+        for cls in range(num_classes):
+            mask1 = labels1 == cls
+            mask2 = labels2 == cls
+
+            cls_voxels1 = voxels1[mask1]
+            cls_voxels2 = voxels2[mask2]
+
+            if len(cls_voxels1) == 0 or len(cls_voxels2) == 0:
+                continue
+
+            # Compare pairs within class
+            num_pairs = min(len(cls_voxels1), len(cls_voxels2))
+            for i in range(num_pairs):
+                iou = compute_voxel_iou_single(cls_voxels1[i], cls_voxels2[i], threshold)
+                iou_scores.append(iou)
+
+    # Simple batch comparison (legacy)
+    else:
+        assert voxels1.shape == voxels2.shape, \
+            f"Shape mismatch: {voxels1.shape} vs {voxels2.shape}"
+
+        batch_size = voxels1.shape[0]
+        for i in range(batch_size):
+            iou = compute_voxel_iou_single(voxels1[i], voxels2[i], threshold)
+            iou_scores.append(iou)
 
     if len(iou_scores) == 0:
         return float('nan'), float('nan')

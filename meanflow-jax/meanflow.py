@@ -28,11 +28,23 @@ def generate(variable, model, rng, n_sample, config, class_idx=None):
 
   z_t = jax.random.normal(rng_xt, x_shape, dtype=model.dtype)   # z_t ~ N(0, 1), sample initial noise
 
+  # rng, rng_sample = jax.random.split(rng, 2)
+  # if class_idx is None:
+  #   labels = jax.random.randint(rng_sample, (n_sample,), 0, num_classes)
+  # else:
+  #   labels = jnp.ones((n_sample,), dtype=jnp.int32) * class_idx
   rng, rng_sample = jax.random.split(rng, 2)
   if class_idx is None:
     labels = jax.random.randint(rng_sample, (n_sample,), 0, num_classes)
   else:
-    labels = jnp.ones((n_sample,), dtype=jnp.int32) * class_idx
+    # Convert to array and broadcast/check shape
+    class_idx_array = jnp.asarray(class_idx)
+    if class_idx_array.ndim == 0:
+      # Scalar: broadcast to all samples
+      labels = jnp.ones((n_sample,), dtype=jnp.int32) * class_idx_array
+    else:
+      # Array: use as-is (should have shape (n_sample,))
+      labels = class_idx_array.astype(jnp.int32)
 
   def step_fn(i, inputs):
     x_i, rng = inputs
@@ -82,6 +94,10 @@ class MeanFlow(nn.Module):
   # Training dynamics
   norm_p:                 float = 1.0
   norm_eps:               float = 0.01
+
+  # Foreground weighting (for sparse 3D data)
+  foreground_weight:      float = 1.0   # Weight multiplier for foreground voxels
+  foreground_threshold:   float = 0.0  # Voxels > threshold are foreground
 
   # Inference setups
   seed:                   int = 0
@@ -153,6 +169,7 @@ class MeanFlow(nn.Module):
     zero_mask = jnp.arange(bz) < data_size
     zero_mask = zero_mask.reshape(bz, 1, 1, 1)
     r = jnp.where(zero_mask, t, r)
+    
 
     return t, r
 
@@ -236,6 +253,21 @@ class MeanFlow(nn.Module):
     u_tgt = jax.lax.stop_gradient(u_tgt)
 
     loss = (u - u_tgt) ** 2
+
+    # Foreground weighting (for sparse 3D data like 3D MNIST)
+    # Only apply if foreground_weight != 1.0
+    if self.foreground_weight != 1.0:
+      # Create foreground mask from real data (x)
+      # Shape: (B, H, W, C), values: 0.0 for background, 1.0 for foreground
+      foreground_mask = (x > self.foreground_threshold).astype(jnp.float32)
+
+      # Create weight map: background=1.0, foreground=foreground_weight
+      # Shape: (B, H, W, C)
+      weight_map = 1.0 + (self.foreground_weight - 1.0) * foreground_mask
+
+      # Apply element-wise weighting BEFORE summing
+      loss = loss * weight_map
+
     loss = jnp.sum(loss, axis=(1, 2, 3)) # sum over pixels
 
     # Adaptive weighting

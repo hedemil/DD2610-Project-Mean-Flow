@@ -19,10 +19,15 @@ def load_config(config_path):
         config_dict = yaml.safe_load(f)
     return ml_collections.ConfigDict(config_dict)
 
-def sample_step(variable, model, rng_init, device_batch_size, config, sample_idx):
-    """Sample from the model."""
+def sample_step(variable, model, rng_init, device_batch_size, config, sample_idx, class_idx=None):
+    """Sample from the model.
+
+    Args:
+        class_idx: Optional class index to generate. If None, uses random classes.
+    """
     rng_sample = jax.random.fold_in(rng_init, sample_idx)
-    images = generate(variable, model, rng_sample, n_sample=device_batch_size, config=config)
+    # CRITICAL FIX: Pass class_idx to control which class to generate
+    images = generate(variable, model, rng_sample, n_sample=device_batch_size, config=config, class_idx=class_idx)
     images = images.transpose(0, 3, 1, 2)  # (B, H, W, C) -> (B, C, H, W)
     return images
 
@@ -195,11 +200,10 @@ def create_html_visualizations(samples, output_dir, step):
 
 def main():
     # Configuration
-    config_path = 'configs/train_3d.yml'
-    checkpoint_dir = 'workdir_3d'  # Will use latest checkpoint
-    output_dir = 'workdir_3d/generated_samples'
-    num_samples = 10  # Generate 100 samples
-    device_batch_size = 2  # Samples per device
+    config_path = 'configs/train_3d_v5.yml'
+    checkpoint_dir = 'workdir_3d_v5'  # Will use latest checkpoint
+    output_dir = 'workdir_3d_v5/generated_samples'
+    device_batch_size = 2  # Samples per device (not used, kept for compatibility)
 
     print("="*60)
     print("3D MNIST Sample Generation")
@@ -207,7 +211,7 @@ def main():
     print(f"Config: {config_path}")
     print(f"Checkpoint: {checkpoint_dir}")
     print(f"Output: {output_dir}")
-    print(f"Num samples: {num_samples}")
+    print(f"Generating: 10 samples (one per digit 0-9)")
     print("="*60)
 
     # Load config
@@ -253,30 +257,35 @@ def main():
         axis_name='batch'
     )
 
-    # Generate samples
-    print(f"\nGenerating {num_samples} samples...")
+    # Generate class-specific samples (one per digit 0-9)
+    print(f"\nGenerating class-specific samples (digits 0-9)...")
     num_devices = jax.local_device_count()
-    samples_per_iter = num_devices * device_batch_size
-    num_iters = (num_samples + samples_per_iter - 1) // samples_per_iter
 
     all_samples = []
-    for i in range(num_iters):
-        print(f"  Batch {i+1}/{num_iters}...")
-        sample_idx = jnp.arange(num_devices) + i * num_devices
+    all_labels = []
 
-        # Sample with EMA parameters
+    for class_idx in range(10):  # Generate one sample per digit
+        print(f"  Generating digit {class_idx}...")
+        sample_idx = jnp.arange(num_devices) + class_idx
+
+        # Broadcast class_idx to match sample_idx shape for pmap
+        class_idx_array = jnp.full_like(sample_idx, class_idx)
+
+        # Sample with EMA parameters for specific class
         variable = {"params": state.ema_params}
-        latent = p_sample_step(variable, sample_idx=sample_idx)
+        latent = p_sample_step(variable, sample_idx=sample_idx, class_idx=class_idx_array)
         latent = latent.reshape(-1, *latent.shape[2:])  # Flatten device dimension
 
         # Transpose to (B, H, W, C) and convert to numpy
         samples = latent.transpose(0, 2, 3, 1)  # (B, C, H, W) -> (B, H, W, C)
         samples = np.array(samples)
 
-        all_samples.append(samples)
+        # Take first sample (each device generates device_batch_size samples)
+        all_samples.append(samples[0])
+        all_labels.append(class_idx)
 
-    # Concatenate and trim to exact number
-    all_samples = np.concatenate(all_samples, axis=0)[:num_samples]
+    # Stack into array
+    all_samples = np.stack(all_samples, axis=0)  # Shape: (10, 16, 16, 16)
 
     print(f"\nGenerated samples shape: {all_samples.shape}")
     print(f"Value range: [{all_samples.min():.3f}, {all_samples.max():.3f}]")
@@ -289,11 +298,15 @@ def main():
     np.save(output_path, all_samples)
     print(f"\nSaved samples to: {output_path}")
 
-    # Save a few individual samples for visualization
-    for i in range(min(10, num_samples)):
+    # Save individual class-specific samples
+    for i in range(10):
         individual_path = f'{output_dir}/sample_{i:03d}.npy'
         np.save(individual_path, all_samples[i])
-    print(f"Saved individual samples: sample_000.npy through sample_009.npy")
+    print(f"Saved class-specific samples:")
+    print(f"  sample_000.npy = digit 0")
+    print(f"  sample_001.npy = digit 1")
+    print(f"  ...")
+    print(f"  sample_009.npy = digit 9")
 
     # Create interactive HTML visualizations
     print("\n" + "="*60)

@@ -1,0 +1,130 @@
+# Training Config V4: VELOCITY MATCHING ABLATION
+#
+# Research Question: What's the optimal balance between data and velocity matching?
+#
+# ABLATION: Data vs velocity matching ratio
+# - V1 (baseline): data_proportion=0.75 (75% data, 25% velocity)
+# - V4 (this):     data_proportion=0.5  (50% data, 50% velocity)
+#
+# Background:
+# MeanFlow trains with two objectives:
+# 1. Data matching (r=t): Learn to denoise from noise→data
+# 2. Velocity matching (r≠t): Learn the velocity field of the flow
+#
+# The paper uses 75/25 split. Does increasing velocity matching to 50% help or hurt?
+#
+# Hypothesis:
+# Too much velocity matching may destabilize training or slow convergence,
+# since data matching provides the primary learning signal.
+#
+# Expected Results:
+# - 50/50 split may show higher variance in loss
+# - Potentially slower convergence than V1
+# - Interesting discussion on sample efficiency vs flow learning
+
+model:
+    cls: DiT_S_4
+    input_size: 16
+    in_channels: 16
+
+dataset:
+    name: mnist3d_latent
+    root: data/mnist3d_latents
+    image_size: 16
+    image_channels: 16
+    num_classes: 10
+
+training:
+    # Keep all training hyperparameters identical to V1
+    batch_size: 64
+    num_epochs: 500
+    learning_rate: 0.0001
+    adam_b2: 0.999
+    ema_type: 'const'
+    ema_val: 0.99995
+
+    # Logging and checkpointing
+    log_per_step: 10
+    checkpoint_per_epoch: 25
+    keep_checkpoints: 5
+
+    # Sampling during training
+    sample_on_training: true
+    sample_per_epoch: 5
+
+    # Evaluation
+    eval_on_training: true
+    eval_per_epoch: 25
+    eval_batch_size: 100
+    eval_num_real: 100
+
+    fid_per_epoch: 50
+    seed: 42
+    half_precision: false
+
+fid:
+    device_batch_size: 2
+    num_samples: 2000
+    cache_ref: /home/emil/KTH/Adv. Deep Learning/Project/DD2610-Project-Mean-Flow/meanflow-jax/imagenet_fid_stats.npz
+    on_training: false
+
+sampling:
+    num_steps: 1
+    num_classes: 10
+    seed: 42
+
+evaluation:
+    chamfer_threshold: -0.5
+    chamfer_enabled: true
+    iou_threshold: -0.5
+    iou_enabled: true
+    fid_views: ['xy', 'xz', 'yz']
+    fid_enabled: false
+    early_stopping_metric: 'chamfer_distance'
+    early_stopping_patience: 50
+    early_stopping_min_delta: 0.01
+
+load_from: null
+eval_only: False
+
+# MeanFlow method parameters
+method:
+    # Time sampling - keep same as V1
+    noise_dist: logit_normal
+    P_mean: -0.4
+    P_std: 1.0
+
+    # ===== ABLATION: 50/50 DATA/VELOCITY SPLIT =====
+    data_proportion: 0.5  # CHANGED: 0.75 → 0.5 (more velocity matching)
+
+    # All other parameters identical to V1
+    class_dropout_prob: 0.1
+    guidance_eq: cfg
+    kappa: 0.5
+    norm_eps: 0.01
+    norm_p: 1.0
+    omega: 1.0
+    t_end: 1.0
+    t_start: 0.0
+
+# Discussion Points for Report:
+#
+# 1. TRAINING STABILITY:
+#    Compare loss variance between V1 (75/25) and V4 (50/50)
+#    Does more velocity matching cause unstable training?
+#
+# 2. CONVERGENCE:
+#    Which converges faster? 75/25 or 50/50?
+#    Plot v_loss specifically (velocity loss component)
+#
+# 3. SAMPLE QUALITY:
+#    Compare final Chamfer Distance and IoU
+#    Does the 50/50 split achieve competitive performance?
+#
+# 4. ALGORITHMIC INSIGHT:
+#    MeanFlow's key innovation is mixing data + velocity matching
+#    Your experiment reveals the optimal mixing ratio for 3D MNIST
+#
+# 5. FUTURE WORK:
+#    Could try data_proportion=0.9 (90/10) or 0.25 (25/75)
+#    Plot performance vs data_proportion for comprehensive analysis

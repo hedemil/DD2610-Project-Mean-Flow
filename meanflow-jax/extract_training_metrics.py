@@ -220,5 +220,5 @@ def extract_metrics(logdir, output_dir='training_metrics'):
     return df, metrics_data
 
 if __name__ == '__main__':
-    logdir = 'workdir_3d'
+    logdir = 'workdir_3d_v4'
     extract_metrics(logdir)

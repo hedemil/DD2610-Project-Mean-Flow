@@ -148,9 +148,9 @@ def train_step_with_vae(state, batch, rng_init, config, lr, ema_fn, latent_mnger
   rng_base, rng_vae = random.split(rng_base)
 
   if is_3d_data:
-    # For 3D data: channels are duplicated, just take first half
-    # Shape: (B, H, W, 32) -> (B, H, W, 16)
-    images = cached[..., :cached.shape[-1]//2]
+    # For 3D data: use voxels directly (no duplication anymore)
+    # Shape: (B, H, W, 16) - direct 16x16x16 voxel data
+    images = cached
   else:
     # For ImageNet latents: sample from distribution (mean + std * noise)
     images = latent_mnger.cached_encode(cached, rng_vae, deterministic=False)
@@ -193,15 +193,15 @@ def train_step_with_vae(state, batch, rng_init, config, lr, ema_fn, latent_mnger
 # Sampling and Metrics
 #######################################################
 
-def sample_step(variable, sample_idx, model, rng_init, device_batch_size, config):
+def sample_step(variable, sample_idx, model, rng_init, device_batch_size, config, class_idx=None):
   """
   sample_idx: each random sampled image corrresponds to a seed
+  class_idx: optional class labels for conditional generation
   """
   rng_sample = random.fold_in(rng_init, sample_idx)  # fold in sample_idx
-  images = generate(variable, model, rng_sample, n_sample=device_batch_size, config=config)
+  images = generate(variable, model, rng_sample, n_sample=device_batch_size, config=config, class_idx=class_idx)
   images = images.transpose(0, 3, 1, 2) # (B, H, W, C) -> (B, C, H, W)
   return images
-
 
 def run_p_sample_step(p_sample_step, state, sample_idx, latent_manager, ema=True, skip_vae_decode=False):
   variable = {"params": state.ema_params if ema else state.params}
@@ -219,8 +219,8 @@ def run_p_sample_step(p_sample_step, state, sample_idx, latent_manager, ema=True
     assert not jnp.any(jnp.isnan(samples)), f"There is nan in decoded samples! Latent range: {latent.min()}, {latent.max()}. nan in latent: {jnp.any(jnp.isnan(latent))}"
     samples = samples.transpose(0, 2, 3, 1) # (B, C, H, W) -> (B, H, W, C)
 
-  samples = 127.5 * samples + 128.0
-  samples = jnp.clip(samples, 0, 255).astype(jnp.uint8)
+    samples = 127.5 * samples + 128.0
+    samples = jnp.clip(samples, 0, 255).astype(jnp.uint8)
 
   jax.random.normal(random.key(0), ()).block_until_ready() # dist sync
   return samples
@@ -366,7 +366,9 @@ def train_and_evaluate(
     ########### Sampling ###########
     if (epoch+1) % config.training.sample_per_epoch == 0 and config.training.get('sample_on_training', True):
       log_for_0(f'Samples at epoch {epoch}...')
-      vis_sample = run_p_sample_step(p_sample_step, state, vis_sample_idx, latent_manager, skip_vae_decode=is_3d_data)
+      # Fold epoch into sample_idx so each epoch generates different samples
+      vis_sample_idx_epoch = vis_sample_idx + (epoch + 1) * 10000
+      vis_sample = run_p_sample_step(p_sample_step, state, vis_sample_idx_epoch, latent_manager, skip_vae_decode=is_3d_data)
       vis_sample = make_3d_grid_visualization(vis_sample, grid=4) if is_3d_data else make_grid_visualization(vis_sample, grid=4)
 
       writer.write_images(epoch+1, {'vis_sample': vis_sample})
@@ -417,54 +419,108 @@ def train_and_evaluate(
       from utils.evaluation_3d import chamfer_distance_batch, compute_voxel_iou
       import numpy as np
 
-      # Generate samples for evaluation
+      # STEP 1: Load real samples first to get their labels
       eval_batch_size = config.training.get('eval_batch_size', 100)
+      val_loader, _ = input_pipeline.create_split(
+        config.dataset,
+        local_batch_size,
+        split='val',
+      )
+
+      real_samples_list = []
+      real_labels_list = []
+      for batch_idx, batch in enumerate(val_loader):
+        batch = input_pipeline.prepare_batch_data(batch)
+        real_batch = batch['image']
+        label_batch = batch['label']
+        # No slicing needed - data is already (B, H, W, 16)
+        real_batch = real_batch.reshape(-1, *real_batch.shape[2:])
+        label_batch = label_batch.reshape(-1)
+        real_samples_list.append(np.array(real_batch))
+        real_labels_list.append(np.array(label_batch))
+        if len(real_samples_list) * real_batch.shape[0] >= eval_batch_size:
+          break
+
+      if len(real_samples_list) == 0:
+        log_for_0(f'  Warning: No validation samples loaded')
+        writer.flush()
+        continue
+
+      real_samples = np.concatenate(real_samples_list, axis=0)[:eval_batch_size]
+      real_labels = np.concatenate(real_labels_list, axis=0)[:eval_batch_size]
+      log_for_0(f'  Loaded {len(real_samples)} real samples')
+      log_for_0(f'  Real samples stats: min={real_samples.min():.4f}, max={real_samples.max():.4f}, mean={real_samples.mean():.4f}')
+
+            # STEP 2: Generate samples with MATCHING class labels (CRITICAL FIX!)
       num_devices = jax.local_device_count()
       device_batch_size = config.fid.device_batch_size
       samples_per_iter = num_devices * device_batch_size
-      num_iters = (eval_batch_size + samples_per_iter - 1) // samples_per_iter
+      num_iters = (len(real_labels) + samples_per_iter - 1) // samples_per_iter
 
       eval_samples = []
+      generated_labels = []  # Track which labels were actually generated
+      
       for i in range(num_iters):
-        sample_idx = jnp.arange(num_devices) + i * num_devices
+        start_idx = i * samples_per_iter
+        end_idx = min(start_idx + samples_per_iter, len(real_labels))
+
+        # Get labels for this batch
+        batch_labels = real_labels[start_idx:end_idx]
+        actual_batch_size = len(batch_labels)  # Store actual size before padding
+
+        # Pad if needed to match device count
+        if len(batch_labels) < samples_per_iter:
+          pad_size = samples_per_iter - len(batch_labels)
+          batch_labels = np.concatenate([batch_labels, batch_labels[:pad_size]])
+
+        # Reshape for pmap: (num_devices, device_batch_size)
+        batch_labels_reshaped = batch_labels.reshape(num_devices, device_batch_size)
+        batch_labels_jax = jnp.array(batch_labels_reshaped)
+
+        # CRITICAL FIX: Fold epoch into sample_idx so each epoch generates DIFFERENT samples
+        # Without this, the same sample_idx values produce identical outputs every epoch
+        sample_idx = jnp.arange(num_devices) + i * num_devices + (epoch + 1) * 10000
+        if i == 0:  # Log only first batch
+          log_for_0(f'    Batch {i}: sample_idx={sample_idx[:3].tolist()}..., epoch={epoch+1}')
         variable = {"params": state.ema_params}
-        latent = p_sample_step(variable, sample_idx=sample_idx)
+
+        # Generate with MATCHING class labels!
+        latent = p_sample_step(variable, sample_idx=sample_idx, class_idx=batch_labels_jax)
         latent = latent.reshape(-1, *latent.shape[2:])
-        # Transpose to (B, H, W, C)
         samples = latent.transpose(0, 2, 3, 1)
-        eval_samples.append(np.array(samples))
+        
+        # Only keep the actual samples (not padded ones)
+        samples_np = np.array(samples)[:actual_batch_size]
+        eval_samples.append(samples_np)
+        generated_labels.extend(real_labels[start_idx:end_idx].tolist())
 
-      eval_samples = np.concatenate(eval_samples, axis=0)[:eval_batch_size]
-      log_for_0(f'  Generated {len(eval_samples)} evaluation samples')
+      eval_samples = np.concatenate(eval_samples, axis=0)
+      generated_labels = np.array(generated_labels)
 
-      # Load real samples from validation set
+      # Track how many values are out of bounds (should decrease as training improves)
+      out_of_bounds = np.sum((eval_samples < -1.0) | (eval_samples > 1.0))
+      total_voxels = eval_samples.size
+      pct_oob = 100.0 * out_of_bounds / total_voxels
+      log_for_0(f'  Out-of-bounds voxels before clipping: {out_of_bounds}/{total_voxels} ({pct_oob:.2f}%)')
+
+      # Clip generated samples to match real data range [-1, 1]
+      # This is necessary during early training when the model hasn't learned proper bounds yet
+      # As training progresses, fewer voxels should need clipping
+      eval_samples = np.clip(eval_samples, -1.0, 1.0)
+
+      # Verify alignment
+      assert len(eval_samples) == len(real_labels) == len(generated_labels)
+      assert np.all(generated_labels == real_labels), "Label mismatch!"
+      
+      log_for_0(f'  Generated {len(eval_samples)} evaluation samples with matching class labels')
+      log_for_0(f'  Real labels (first 10): {real_labels[:10]}')
+      log_for_0(f'  Generated for labels (first 10): {generated_labels[:10]}')
+      log_for_0(f'  Generated samples stats: min={eval_samples.min():.4f}, max={eval_samples.max():.4f}, mean={eval_samples.mean():.4f}, std={eval_samples.std():.4f}')
+      log_for_0(f'  Real samples stats (for comparison): mean={real_samples.mean():.4f}, std={real_samples.std():.4f}')
+      log_for_0(f'  EMA params norm: {np.linalg.norm(jax.tree_util.tree_leaves(state.ema_params)[0].flatten()[:100]):.4f}')
+      
+      # STEP 3: Compute metrics on class-matched pairs
       try:
-        val_loader, _ = input_pipeline.create_split(
-          config.dataset,
-          local_batch_size,
-          split='val',
-        )
-        real_samples = []
-        for batch_idx, batch in enumerate(val_loader):
-          batch = input_pipeline.prepare_batch_data(batch)
-          real_batch = batch['image']
-          if is_3d_data:
-            # For 3D: take first half of channels (remove duplicate)
-            real_batch = real_batch[..., :real_batch.shape[-1]//2]
-          # Flatten device dimension: (devices, batch, H, W, C) -> (devices*batch, H, W, C)
-          real_batch = real_batch.reshape(-1, *real_batch.shape[2:])
-          real_samples.append(np.array(real_batch))
-          if len(real_samples) * real_batch.shape[0] >= eval_batch_size:
-            break
-        
-        if len(real_samples) == 0:
-          log_for_0(f'  Warning: No validation samples loaded')
-          writer.flush()
-          continue
-        
-        real_samples = np.concatenate(real_samples, axis=0)[:eval_batch_size]
-        log_for_0(f'  Loaded {len(real_samples)} real samples')
-
         # Compute Chamfer Distance
         if config.get('evaluation', {}).get('chamfer_enabled', True):
           threshold = config.get('evaluation', {}).get('chamfer_threshold', -0.5)
