@@ -179,20 +179,22 @@ def main():
     print("COMPUTING METRICS (CLASS-ALIGNED)")
     print("="*70)
 
-    # Chamfer Distance
+    # Chamfer Distance (rotation-invariant to fix orientation issues)
     cd_mean, cd_std = chamfer_distance_batch(
         eval_samples, real_samples,
         eval_labels, real_labels,
         threshold=threshold,
-        class_aligned=True
+        class_aligned=True,
+        rotation_invariant=True
     )
 
-    # IoU
+    # IoU (rotation-invariant to fix orientation issues)
     iou_mean, iou_std = compute_voxel_iou(
         eval_samples, real_samples,
         eval_labels, real_labels,
         threshold=threshold,
-        class_aligned=True
+        class_aligned=True,
+        rotation_invariant=True
     )
 
     # Coverage

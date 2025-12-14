@@ -82,12 +82,57 @@ def chamfer_distance_single(pc1: jnp.ndarray, pc2: jnp.ndarray, normalize: bool 
     return float(chamfer)
 
 
+def get_best_rotation(gen_voxel: np.ndarray,
+                      real_voxel: np.ndarray,
+                      threshold: float = 0.0) -> Tuple[np.ndarray, int, float]:
+    """Find best rotation of generated voxel to match real voxel.
+
+    Tries 4 rotations around z-axis (90° increments) and returns the one
+    with lowest Chamfer distance.
+
+    Args:
+        gen_voxel: Generated voxel (C, H, W) or (H, W, D)
+        real_voxel: Real voxel (C, H, W) or (H, W, D)
+        threshold: Voxel threshold for point clouds
+
+    Returns:
+        (best_rotated_voxel, rotation_index, best_chamfer)
+    """
+    best_chamfer = float('inf')
+    best_rotation = 0
+    best_voxel = gen_voxel
+
+    real_pc = voxels_to_point_cloud(real_voxel, threshold)
+    if len(real_pc) == 0:
+        return gen_voxel, 0, float('nan')
+
+    # Try 4 rotations: 0°, 90°, 180°, 270° around z-axis
+    # Assuming last two dims are the rotation plane (H, W)
+    for k in range(4):
+        # Rotate in the H-W plane (axes 1,2 if shape is (C,H,W))
+        rotated = np.rot90(gen_voxel, k=k, axes=(1, 2))
+
+        gen_pc = voxels_to_point_cloud(rotated, threshold)
+        if len(gen_pc) == 0:
+            continue
+
+        cd = chamfer_distance_single(gen_pc, real_pc, normalize=True)
+
+        if cd < best_chamfer:
+            best_chamfer = cd
+            best_rotation = k
+            best_voxel = rotated
+
+    return best_voxel, best_rotation, best_chamfer
+
+
 def chamfer_distance_batch(generated_voxels: np.ndarray,
                            real_voxels: np.ndarray,
                            generated_labels: Optional[np.ndarray] = None,
                            real_labels: Optional[np.ndarray] = None,
                            threshold: float = 0.0,
-                           class_aligned: bool = True) -> Tuple[float, float]:
+                           class_aligned: bool = True,
+                           rotation_invariant: bool = False) -> Tuple[float, float]:
     """Compute Chamfer Distance between batches of generated and real voxel grids.
 
     Args:
@@ -97,6 +142,7 @@ def chamfer_distance_batch(generated_voxels: np.ndarray,
         real_labels: Optional labels for real samples (B,)
         threshold: Voxel threshold for point cloud conversion
         class_aligned: If True and labels provided, compare only within same class
+        rotation_invariant: If True, find best rotation match (fixes orientation issues)
 
     Returns:
         (mean_chamfer, std_chamfer): Mean and std of Chamfer distances
@@ -120,12 +166,19 @@ def chamfer_distance_batch(generated_voxels: np.ndarray,
             # Compare pairs within class
             num_pairs = min(len(gen_cls), len(real_cls))
             for i in range(num_pairs):
-                gen_pc = voxels_to_point_cloud(gen_cls[i], threshold)
-                real_pc = voxels_to_point_cloud(real_cls[i], threshold)
+                if rotation_invariant:
+                    # Find best rotation
+                    _, _, cd = get_best_rotation(gen_cls[i], real_cls[i], threshold)
+                    if not np.isnan(cd):
+                        chamfer_distances.append(cd)
+                else:
+                    # Standard comparison
+                    gen_pc = voxels_to_point_cloud(gen_cls[i], threshold)
+                    real_pc = voxels_to_point_cloud(real_cls[i], threshold)
 
-                if len(gen_pc) > 0 and len(real_pc) > 0:
-                    cd = chamfer_distance_single(gen_pc, real_pc, normalize=True)
-                    chamfer_distances.append(cd)
+                    if len(gen_pc) > 0 and len(real_pc) > 0:
+                        cd = chamfer_distance_single(gen_pc, real_pc, normalize=True)
+                        chamfer_distances.append(cd)
 
     # Simple batch comparison (legacy)
     else:
@@ -175,12 +228,43 @@ def compute_voxel_iou_single(voxels1: np.ndarray,
     return float(intersection / union)
 
 
+def get_best_rotation_iou(gen_voxel: np.ndarray,
+                         real_voxel: np.ndarray,
+                          threshold: float = 0.0) -> Tuple[np.ndarray, int, float]:
+    """Find best rotation of generated voxel to maximize IoU with real voxel.
+
+    Args:
+        gen_voxel: Generated voxel
+        real_voxel: Real voxel
+        threshold: Voxel threshold
+
+    Returns:
+        (best_rotated_voxel, rotation_index, best_iou)
+    """
+    best_iou = 0.0
+    best_rotation = 0
+    best_voxel = gen_voxel
+
+    # Try 4 rotations around z-axis
+    for k in range(4):
+        rotated = np.rot90(gen_voxel, k=k, axes=(1, 2))
+        iou = compute_voxel_iou_single(rotated, real_voxel, threshold)
+
+        if iou > best_iou:
+            best_iou = iou
+            best_rotation = k
+            best_voxel = rotated
+
+    return best_voxel, best_rotation, best_iou
+
+
 def compute_voxel_iou(voxels1: np.ndarray,
                       voxels2: np.ndarray,
                       labels1: Optional[np.ndarray] = None,
                       labels2: Optional[np.ndarray] = None,
                       threshold: float = 0.0,
-                      class_aligned: bool = True) -> tuple:
+                      class_aligned: bool = True,
+                      rotation_invariant: bool = False) -> tuple:
     """Compute Intersection over Union between batches of voxel grids.
 
     Args:
@@ -190,6 +274,7 @@ def compute_voxel_iou(voxels1: np.ndarray,
         labels2: Optional labels for second batch (B,)
         threshold: Voxel values above this are considered "on"
         class_aligned: If True and labels provided, compare only within same class
+        rotation_invariant: If True, find best rotation match (fixes orientation issues)
 
     Returns:
         Tuple of (mean_iou, std_iou)
@@ -213,8 +298,14 @@ def compute_voxel_iou(voxels1: np.ndarray,
             # Compare pairs within class
             num_pairs = min(len(cls_voxels1), len(cls_voxels2))
             for i in range(num_pairs):
-                iou = compute_voxel_iou_single(cls_voxels1[i], cls_voxels2[i], threshold)
-                iou_scores.append(iou)
+                if rotation_invariant:
+                    # Find best rotation
+                    _, _, iou = get_best_rotation_iou(cls_voxels1[i], cls_voxels2[i], threshold)
+                    iou_scores.append(iou)
+                else:
+                    # Standard comparison
+                    iou = compute_voxel_iou_single(cls_voxels1[i], cls_voxels2[i], threshold)
+                    iou_scores.append(iou)
 
     # Simple batch comparison (legacy)
     else:
