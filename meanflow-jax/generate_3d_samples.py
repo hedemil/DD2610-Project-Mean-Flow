@@ -200,9 +200,9 @@ def create_html_visualizations(samples, output_dir, step):
 
 def main():
     # Configuration
-    config_path = 'configs/train_3d_v5.yml'
-    checkpoint_dir = 'workdir_3d_v5'  # Will use latest checkpoint
-    output_dir = 'workdir_3d_v5/generated_samples'
+    config_path = 'configs/train_3d_v1.yml'
+    checkpoint_dir = 'workdir_3d_v1_new'  # Will use latest checkpoint
+    output_dir = 'workdir_3d_v1_new/generated_samples'
     device_batch_size = 2  # Samples per device (not used, kept for compatibility)
 
     print("="*60)
