@@ -1,0 +1,73 @@
+# Training config for ImageNet-100 on GCP
+# This config works for both local and GCP training
+
+model:
+    cls: DiT_B_4  # Keep same model architecture
+
+dataset:
+    # IMPORTANT: You need to prepare ImageNet latent dataset first
+    # See README.md or GCP_TRAINING_GUIDE.md for data preparation
+    # The code automatically appends '/train' to this path
+    name: imagenet_latent  # Contains 'latent' so uses LatentDataset
+    root: /home/jupyter/gcs/imagenet-jax-latent  # Parent folder (train/ will be appended)
+    image_size: 32  # Latent size for model initialization
+    image_channels: 4  # Latent channels after VAE encoding
+    num_classes: 100  # ImageNet-100 has 100 classes
+
+training:
+    # Batch size - adjust based on your GPU
+    batch_size: 16  # For GCP GPU. Use 4-8 for local GPU with limited VRAM
+
+    # Training duration
+    num_epochs: 10  # Increase to 240 for full training
+
+    learning_rate: 0.0001
+    adam_b2: 0.95
+    ema_type: 'const'
+    ema_val: 0.9999
+
+    # Logging and checkpointing
+    log_per_step: 10  # Log every 10 steps (more frequent for short training)
+    checkpoint_per_epoch: 5  # Save checkpoint every 5 epochs
+
+    # Sampling during training (keep minimal)
+    sample_on_training: True
+    sample_per_epoch: 5  # Generate samples every 5 epochs
+
+    # FID evaluation (expensive, do sparingly)
+    fid_per_epoch: 50  # Only at end (epoch 10 won't trigger FID)
+
+    seed: 42
+
+    # Optional: Enable half precision to save memory (may reduce quality)
+    half_precision: false  # Set to true if you still get OOM
+
+fid:
+    # Small batch and sample count for faster evaluation
+    device_batch_size: 2  # Keep same as inference
+    num_samples: 2000  # Reduced from 50000 for faster evaluation
+    cache_ref: /home/jupyter/DD2610-Project-Mean-Flow/meanflow-jax/imagenet_fid_stats.npz
+    on_training: true  # Enable FID during training
+
+sampling:
+    num_steps: 1  # Single-step sampling
+    num_classes: 100  # Override default 1000 -> 100 for ImageNet-100
+
+# Don't load checkpoint (train from scratch)
+load_from: null
+eval_only: False
+
+# Method parameters (keep defaults for now)
+method:
+    P_mean: -0.4
+    P_std: 1.0
+    class_dropout_prob: 0.1
+    data_proportion: 0.75
+    guidance_eq: cfg
+    kappa: 0.5
+    noise_dist: logit_normal
+    norm_eps: 0.01
+    norm_p: 1.0
+    omega: 1.0
+    t_end: 1.0
+    t_start: 0.0

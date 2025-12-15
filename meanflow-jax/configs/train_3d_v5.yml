@@ -1,0 +1,152 @@
+# Training Config V5: CLASSIFIER-FREE GUIDANCE ABLATION
+#
+# Research Question: How does guidance strength affect quality vs diversity?
+#
+# ABLATION: Classifier-free guidance (CFG) strength
+# - V1 (baseline): omega=1.0 (standard guidance)
+# - V5 (this):     omega=3.0 (strong guidance)
+#
+# Background:
+# CFG interpolates between conditional and unconditional predictions:
+#   output = uncond + omega * (cond - uncond)
+#
+# - omega=0.0: No guidance (ignore class labels)
+# - omega=1.0: Standard guidance (V1 baseline)
+# - omega>1.0: Strong guidance (amplify class conditioning)
+#
+# Hypothesis:
+# Higher omega (3.0) should:
+# + Improve class consistency (generated "3" looks more like a 3)
+# + Improve quantitative metrics (Chamfer, IoU)
+# - Reduce sample diversity (mode collapse risk)
+#
+# Expected Results:
+# - Better Chamfer Distance / IoU than V1
+# - More "canonical" looking digits
+# - Potential discussion on quality/diversity trade-off
+
+model:
+    cls: DiT_S_4
+    input_size: 16
+    in_channels: 16
+
+dataset:
+    name: mnist3d_latent
+    root: data/mnist3d_latents
+    image_size: 16
+    image_channels: 16
+    num_classes: 10
+
+training:
+    # Keep all training hyperparameters identical to V1
+    batch_size: 64
+    num_epochs: 500
+    learning_rate: 0.0001
+    adam_b2: 0.999
+    ema_type: 'const'
+    ema_val: 0.99995
+
+    # Logging and checkpointing
+    log_per_step: 10
+    checkpoint_per_epoch: 25
+    keep_checkpoints: 5
+
+    # Sampling during training
+    sample_on_training: true
+    sample_per_epoch: 5
+
+    # Evaluation
+    eval_on_training: true
+    eval_per_epoch: 25
+    eval_batch_size: 100
+    eval_num_real: 100
+
+    fid_per_epoch: 50
+    seed: 42
+    half_precision: false
+
+fid:
+    device_batch_size: 2
+    num_samples: 2000
+    cache_ref: /home/emil/KTH/Adv. Deep Learning/Project/DD2610-Project-Mean-Flow/meanflow-jax/imagenet_fid_stats.npz
+    on_training: false
+
+sampling:
+    num_steps: 1
+    num_classes: 10
+    seed: 42
+
+evaluation:
+    chamfer_threshold: -0.5
+    chamfer_enabled: true
+    iou_threshold: -0.5
+    iou_enabled: true
+    fid_views: ['xy', 'xz', 'yz']
+    fid_enabled: false
+    early_stopping_metric: 'chamfer_distance'
+    early_stopping_patience: 50
+    early_stopping_min_delta: 0.01
+
+load_from: null
+eval_only: False
+
+# MeanFlow method parameters
+method:
+    # Time sampling - keep same as V1
+    noise_dist: logit_normal
+    P_mean: -0.4
+    P_std: 1.0
+
+    # Data/velocity ratio - keep same as V1
+    data_proportion: 0.75
+
+    # ===== ABLATION: STRONG CFG GUIDANCE =====
+    guidance_eq: cfg
+    omega: 3.0  # CHANGED: 1.0 → 3.0 (3x stronger guidance)
+
+    # All other parameters identical to V1
+    class_dropout_prob: 0.1  # Keep 10% dropout (enables CFG)
+    kappa: 0.5
+    norm_eps: 0.01
+    norm_p: 1.0
+    t_end: 1.0
+    t_start: 0.0
+
+# Discussion Points for Report:
+#
+# 1. QUANTITATIVE METRICS:
+#    Compare Chamfer Distance and IoU between V1 (omega=1.0) and V5 (omega=3.0)
+#    Does stronger guidance improve numerical scores?
+#
+# 2. VISUAL QUALITY:
+#    Compare generated samples side-by-side
+#    Are V5 digits more "prototypical" (cleaner, more canonical shapes)?
+#
+# 3. CLASS CONSISTENCY:
+#    Generate 100 samples per class
+#    Compute per-class Chamfer Distance
+#    Does omega=3.0 reduce intra-class variance?
+#
+# 4. DIVERSITY ANALYSIS:
+#    Check for mode collapse
+#    Compare variance of generated samples within each class
+#    Does strong guidance reduce diversity too much?
+#
+# 5. QUALITY/DIVERSITY TRADE-OFF:
+#    Classic generative modeling trade-off
+#    Your results show where omega=3.0 falls on this spectrum
+#
+# 6. PRACTICAL IMPLICATIONS:
+#    For applications requiring high fidelity (e.g., medical imaging),
+#    omega=3.0 may be preferable despite reduced diversity
+#
+# 7. FUTURE WORK:
+#    Sweep omega ∈ {0.0, 0.5, 1.0, 2.0, 3.0, 5.0}
+#    Plot Chamfer vs diversity as function of omega
+#    Find Pareto frontier for quality/diversity trade-off
+#
+# BONUS EXPERIMENT (if time permits):
+# Run V5b with omega=0.0 (no guidance) to show full spectrum:
+#   omega=0.0: Diverse but class-inconsistent
+#   omega=1.0: Balanced (V1)
+#   omega=3.0: High fidelity but less diverse (V5)

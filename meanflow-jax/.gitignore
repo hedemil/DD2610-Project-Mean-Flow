@@ -1,0 +1,11 @@
+checkpoints/
+logs/
+temp/
+data/
+workdir_3d/
+workdir_3d_eval/
+workdir_3d_v1/
+workdir_3d_v2/
+workdir_3d_v3/
+workdir_3d_v4/
+workdir_3d_v5/

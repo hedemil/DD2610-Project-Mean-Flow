@@ -151,12 +151,12 @@ def create_latent_split(dataset_cfg, batch_size, split):
       it: A PyTorch Dataloader.
       steps_per_epoch: Number of steps to loop through the DataLoader.
     """
-    # copied from our FM repo
-    assert split == 'train'
+    # Support both train and val splits
+    is_train = (split == 'train')
     name = dataset_cfg.name.upper()
     ds = LatentDataset(
       root=os.path.join(dataset_cfg.root, split),
-      use_flip=True,
+      use_flip=is_train,  # Only flip during training
     )
     log_for_0(ds)
     rank = jax.process_index()
@@ -164,7 +164,7 @@ def create_latent_split(dataset_cfg, batch_size, split):
       ds,
       num_replicas=jax.process_count(),
       rank=rank,
-      shuffle=True,
+      shuffle=is_train,  # Only shuffle during training
     )
     it = DataLoader(
       ds, batch_size=batch_size, drop_last=True,

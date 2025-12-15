@@ -1,0 +1,74 @@
+# Training config for limited compute (local GPU)
+# This is a minimal config to demonstrate training capability
+# Not expected to achieve good FID scores due to compute constraints
+
+model:
+    cls: DiT_S_2  # Start with smaller model for 16x16x16 voxels
+    input_size: 16  # Override default 32 -> 16x16 spatial size
+    in_channels: 16  # 16 depth slices as channels
+
+dataset:
+    name: mnist3d_latent  # Contains 'latent' so uses LatentDataset
+    root: data/mnist3d_latents
+    image_size: 16  # Spatial: 16x16 (depth becomes channels)
+    image_channels: 16  # Depth dimension treated as 16 channels
+    num_classes: 10  # 10 digits
+
+
+training:
+    # Critical: Small batch size for local GPU
+    batch_size: 32  # Increased for better gradients (was 4)
+
+    # Short training for demonstration
+    num_epochs: 500  # Reduced from 240. Enough to show loss curve
+
+    learning_rate: 0.0001  # Back to 1e-4 (1e-5 was too conservative)
+    adam_b2: 0.999  # Fixed: was 0.95, should be 0.999 per MeanFlow reference
+    ema_type: 'const'
+    ema_val: 0.99995  # Fixed: was 0.9999, should be 0.99995 per reference
+
+    # Logging and checkpointing
+    log_per_step: 10  # Log every 10 steps (more frequent for short training)
+    checkpoint_per_epoch: 5  # Save checkpoint every 5 epochs
+
+    # Sampling during training (keep minimal)
+    sample_on_training: True
+    sample_per_epoch: 5  # Generate samples every 5 epochs
+
+    # FID evaluation (expensive, do sparingly)
+    fid_per_epoch: 50  # Only at end (epoch 10 won't trigger FID)
+
+    seed: 42
+
+    # Optional: Enable half precision to save memory (may reduce quality)
+    half_precision: false  # Set to true if you still get OOM
+
+fid:
+    # FID is disabled for 3D data (Inception network expects RGB images)
+    device_batch_size: 2
+    num_samples: 2000
+    cache_ref: /home/emil/KTH/Adv. Deep Learning/Project/DD2610-Project-Mean-Flow/meanflow-jax/imagenet_fid_stats.npz
+    on_training: false  # Disabled: FID not applicable for 3D voxel data
+
+sampling:
+    num_steps: 1  # Single-step sampling
+    num_classes: 10  # Override default 1000 -> 10 for MNIST
+
+# Don't load checkpoint (train from scratch)
+load_from: null
+eval_only: False
+
+# Method parameters (keep defaults for now)
+method:
+    P_mean: -0.4
+    P_std: 1.0
+    class_dropout_prob: 0.1
+    data_proportion: 0.75
+    guidance_eq: cfg
+    kappa: 0.5
+    noise_dist: logit_normal
+    norm_eps: 0.01
+    norm_p: 1.0
+    omega: 1.0
+    t_end: 1.0
+    t_start: 0.0

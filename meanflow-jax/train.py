@@ -26,13 +26,14 @@ from utils.info_util import print_params
 from utils.logging_util import Timer, log_for_0
 from utils.vae_util import LatentManager
 from utils.vis_util import make_grid_visualization
+from utils.vis_3d_util import make_3d_grid_visualization
 
 #######################################################
 # Initialize
 #######################################################
 
-def initialized(key, image_size, model):
-  input_shape = (1, image_size, image_size, 4)
+def initialized(key, image_size, model, in_channels=4):
+  input_shape = (1, image_size, image_size, in_channels)
   x = jnp.ones(input_shape)
   t = jnp.ones((1,), dtype=int)
   y = jnp.ones((1,), dtype=int)
@@ -55,7 +56,7 @@ class TrainState(train_state.TrainState):
 
 
 def create_train_state(
-    rng, config: ml_collections.ConfigDict, model, image_size, lr_value
+    rng, config: ml_collections.ConfigDict, model, image_size, lr_value, steps_per_epoch=None
 ):
   """
   Create initial training state.
@@ -64,16 +65,59 @@ def create_train_state(
   """
 
   rng, rng_init = random.split(rng)
-  
-  _, params = initialized(rng_init, image_size, model)
+
+  in_channels = config.model.get('in_channels', 4)
+  _, params = initialized(rng_init, image_size, model, in_channels=in_channels)
   ema_params = deepcopy(params)
   ema_params = update_ema(ema_params, params, 0)
   print_params(params['net'])
-  tx = optax.adamw(
-      learning_rate=lr_value,
-      weight_decay=0,
-      b2=config.training.adam_b2,
-  )
+
+  # Create learning rate schedule if enabled
+  if config.training.get('use_lr_schedule', False) and steps_per_epoch is not None:
+      log_for_0('Creating learning rate schedule...')
+      warmup_steps = config.training.get('warmup_steps', 1000)
+      total_steps = config.training.num_epochs * steps_per_epoch
+      decay_steps = total_steps - warmup_steps
+      min_lr = config.training.get('min_lr', 1e-5)
+
+      # Warmup phase: linear increase from 0 to peak LR
+      warmup_fn = optax.linear_schedule(
+          init_value=0.0,
+          end_value=config.training.learning_rate,
+          transition_steps=warmup_steps
+      )
+
+      # Decay phase: cosine decay from peak LR to min LR
+      decay_fn = optax.cosine_decay_schedule(
+          init_value=config.training.learning_rate,
+          decay_steps=decay_steps,
+          alpha=min_lr / config.training.learning_rate
+      )
+
+      # Combine schedules
+      lr_schedule = optax.join_schedules(
+          schedules=[warmup_fn, decay_fn],
+          boundaries=[warmup_steps]
+      )
+
+      log_for_0(f'  Warmup steps: {warmup_steps} ({warmup_steps/steps_per_epoch:.1f} epochs)')
+      log_for_0(f'  Total steps: {total_steps}')
+      log_for_0(f'  Peak LR: {config.training.learning_rate:.2e}')
+      log_for_0(f'  Min LR: {min_lr:.2e}')
+
+      tx = optax.adamw(
+          learning_rate=lr_schedule,
+          weight_decay=0,
+          b2=config.training.adam_b2,
+      )
+  else:
+      # Use fixed learning rate
+      tx = optax.adamw(
+          learning_rate=lr_value,
+          weight_decay=0,
+          b2=config.training.adam_b2,
+      )
+
   state = TrainState.create(
       apply_fn=partial(model.apply, method=model.forward),
       params=params,
@@ -93,7 +137,7 @@ def compute_metrics(dict_losses):
   return metrics
 
 
-def train_step_with_vae(state, batch, rng_init, config, lr, ema_fn, latent_mnger):
+def train_step_with_vae(state, batch, rng_init, config, lr, ema_fn, latent_mnger, is_3d_data=False):
   """
   Perform a single training step.
   """
@@ -102,7 +146,14 @@ def train_step_with_vae(state, batch, rng_init, config, lr, ema_fn, latent_mnger
 
   cached = batch['image'] # [B, H, W, C]
   rng_base, rng_vae = random.split(rng_base)
-  images = latent_mnger.cached_encode(cached, rng_vae) # [B, H, W, C] sample latent
+
+  if is_3d_data:
+    # For 3D data: use voxels directly (no duplication anymore)
+    # Shape: (B, H, W, 16) - direct 16x16x16 voxel data
+    images = cached
+  else:
+    # For ImageNet latents: sample from distribution (mean + std * noise)
+    images = latent_mnger.cached_encode(cached, rng_vae, deterministic=False)
 
   labels = batch['label']
 
@@ -142,37 +193,45 @@ def train_step_with_vae(state, batch, rng_init, config, lr, ema_fn, latent_mnger
 # Sampling and Metrics
 #######################################################
 
-def sample_step(variable, sample_idx, model, rng_init, device_batch_size, config):
+def sample_step(variable, sample_idx, model, rng_init, device_batch_size, config, class_idx=None):
   """
   sample_idx: each random sampled image corrresponds to a seed
+  class_idx: optional class labels for conditional generation
   """
   rng_sample = random.fold_in(rng_init, sample_idx)  # fold in sample_idx
-  images = generate(variable, model, rng_sample, n_sample=device_batch_size, config=config)
+  images = generate(variable, model, rng_sample, n_sample=device_batch_size, config=config, class_idx=class_idx)
   images = images.transpose(0, 3, 1, 2) # (B, H, W, C) -> (B, C, H, W)
   return images
 
-
-def run_p_sample_step(p_sample_step, state, sample_idx, latent_manager, ema=True):
+def run_p_sample_step(p_sample_step, state, sample_idx, latent_manager, ema=True, skip_vae_decode=False):
   variable = {"params": state.ema_params if ema else state.params}
   latent = p_sample_step(variable, sample_idx=sample_idx)
   latent = latent.reshape(-1, *latent.shape[2:])
 
-  # Decode
-  samples = latent_manager.decode(latent)
-  assert not jnp.any(jnp.isnan(samples)), f"There is nan in decoded samples! Latent range: {latent.min()}, {latent.max()}. nan in latent: {jnp.any(jnp.isnan(latent))}"
+  if skip_vae_decode:
+    # For 3D data: latent IS the actual data, no VAE decoding needed
+    samples = latent
+    # Transpose from (B, C, H, W) to (B, H, W, C)
+    samples = samples.transpose(0, 2, 3, 1)
+  else:
+    # For ImageNet: decode VAE latents to images
+    samples = latent_manager.decode(latent)
+    assert not jnp.any(jnp.isnan(samples)), f"There is nan in decoded samples! Latent range: {latent.min()}, {latent.max()}. nan in latent: {jnp.any(jnp.isnan(latent))}"
+    samples = samples.transpose(0, 2, 3, 1) # (B, C, H, W) -> (B, H, W, C)
 
-  samples = samples.transpose(0, 2, 3, 1) # (B, C, H, W) -> (B, H, W, C)
-  samples = 127.5 * samples + 128.0
-  samples = jnp.clip(samples, 0, 255).astype(jnp.uint8)
+    samples = 127.5 * samples + 128.0
+    samples = jnp.clip(samples, 0, 255).astype(jnp.uint8)
 
   jax.random.normal(random.key(0), ()).block_until_ready() # dist sync
   return samples
 
 
-def get_fid_evaluator(workdir, config, writer, p_sample_step, latent_manager):
-  inception_net = fid_util.build_jax_inception()
+def get_fid_evaluator(workdir, config, writer, p_sample_step, latent_manager, is_3d_data=False):
+  # Use smaller batch size for local GPU (50 instead of default 200)
+  inception_batch_size = 50
+  inception_net = fid_util.build_jax_inception(batch_size=inception_batch_size)
   stats_ref = fid_util.get_reference(config.fid.cache_ref, inception_net)
-  run_p_sample_step_inner = partial(run_p_sample_step, latent_manager=latent_manager)
+  run_p_sample_step_inner = partial(run_p_sample_step, latent_manager=latent_manager, skip_vae_decode=is_3d_data)
   
   def evaluator(state, epoch):
     log_for_0('Eval fid at epoch: {}'.format(epoch))
@@ -180,7 +239,7 @@ def get_fid_evaluator(workdir, config, writer, p_sample_step, latent_manager):
     samples_all = sample_util.generate_fid_samples(
           state, workdir, config, p_sample_step, run_p_sample_step_inner
     )
-    mu, sigma = fid_util.compute_stats(samples_all, inception_net)
+    mu, sigma = fid_util.compute_stats(samples_all, inception_net, batch_size=inception_batch_size)
     fid_score = fid_util.compute_fid(mu, stats_ref["mu"], sigma, stats_ref["sigma"])
     log_for_0(f'FID w/ EMA at {samples_all.shape[0]} samples: {fid_score}')
     
@@ -226,6 +285,9 @@ def train_and_evaluate(
   model_config = config.model.to_dict()
   model_str = model_config.pop('cls')
 
+  log_for_0(f'Model config: {model_config}')
+  log_for_0(f'Model class: {model_str}')
+
   model = MeanFlow(
     model_str=model_str,
     model_config=model_config,
@@ -235,26 +297,31 @@ def train_and_evaluate(
 
   ########### Create Train State ###########
   base_lr = config.training.learning_rate
-  state = create_train_state(rng, config, model, image_size, lr_value=base_lr)
+  state = create_train_state(rng, config, model, image_size, lr_value=base_lr, steps_per_epoch=steps_per_epoch)
   if config.load_from is not None:
     state = restore_checkpoint(state, config.load_from)
   
   step_offset = int(state.step)
-  epoch_offset = step_offset // steps_per_epoch
+  epoch_offset = 0 if config.eval_only else (step_offset // steps_per_epoch)
   
   state = jax_utils.replicate(state)
   ema_fn = ema_schedules(config)
+
+  # Detect if we're using 3D data (no VAE decoding needed)
+  is_3d_data = '3d' in config.dataset.name.lower() or config.model.get('in_channels', 4) > 4
+  log_for_0(f'3D data mode: {is_3d_data} (skip VAE decode)')
 
   latent_manager = LatentManager(config.dataset.vae, config.fid.device_batch_size, image_size)
 
   p_train_step = jax.pmap(
       partial(
-        train_step_with_vae, 
-        rng_init=rng, 
-        config=config, 
+        train_step_with_vae,
+        rng_init=rng,
+        config=config,
         lr=base_lr,
         ema_fn=ema_fn,
         latent_mnger=latent_manager,
+        is_3d_data=is_3d_data,
       ),
       axis_name='batch',
   )
@@ -275,11 +342,19 @@ def train_and_evaluate(
   )
 
   if config.fid.on_training:
-    fid_evaluator = get_fid_evaluator(workdir, config, writer, p_sample_step, latent_manager)
+    fid_evaluator = get_fid_evaluator(workdir, config, writer, p_sample_step, latent_manager, is_3d_data)
 
   if config.eval_only:
     fid_evaluator(state, epoch_offset)
     return state
+
+  ########### Early Stopping Setup ###########
+  best_metric = float('inf')
+  patience_counter = 0
+  early_stopping_patience = config.get('evaluation', {}).get('early_stopping_patience', 100)
+  early_stopping_metric = config.get('evaluation', {}).get('early_stopping_metric', 'chamfer_distance')
+  early_stopping_min_delta = config.get('evaluation', {}).get('early_stopping_min_delta', 0.01)
+  log_for_0(f'Early stopping: patience={early_stopping_patience}, metric={early_stopping_metric}, min_delta={early_stopping_min_delta}')
 
   ########### Training Loop ###########
   for epoch in range(epoch_offset, config.training.num_epochs):
@@ -287,12 +362,15 @@ def train_and_evaluate(
     if jax.process_count() > 1:
       train_loader.sampler.set_epoch(epoch)
     log_for_0('epoch {}...'.format(epoch))
-    
+
     ########### Sampling ###########
     if (epoch+1) % config.training.sample_per_epoch == 0 and config.training.get('sample_on_training', True):
       log_for_0(f'Samples at epoch {epoch}...')
-      vis_sample = run_p_sample_step(p_sample_step, state, vis_sample_idx, latent_manager)
-      vis_sample = make_grid_visualization(vis_sample, grid=4)
+      # Fold epoch into sample_idx so each epoch generates different samples
+      vis_sample_idx_epoch = vis_sample_idx + (epoch + 1) * 10000
+      vis_sample = run_p_sample_step(p_sample_step, state, vis_sample_idx_epoch, latent_manager, skip_vae_decode=is_3d_data)
+      vis_sample = make_3d_grid_visualization(vis_sample, grid=4) if is_3d_data else make_grid_visualization(vis_sample, grid=4)
+
       writer.write_images(epoch+1, {'vis_sample': vis_sample})
       writer.flush()
 
@@ -332,6 +410,148 @@ def train_and_evaluate(
       or (epoch+1) == config.training.num_epochs
     ):
       save_checkpoint(state, workdir)
+
+    ########### 3D Evaluation Metrics ###########
+    if (epoch+1) % config.training.get('eval_per_epoch', 25) == 0 and config.training.get('eval_on_training', False) and is_3d_data:
+      log_for_0(f'Evaluation at epoch {epoch+1}...')
+
+      # Import evaluation utilities
+      from utils.evaluation_3d import chamfer_distance_batch, compute_voxel_iou
+      import numpy as np
+
+      # STEP 1: Load real samples first to get their labels
+      eval_batch_size = config.training.get('eval_batch_size', 100)
+      val_loader, _ = input_pipeline.create_split(
+        config.dataset,
+        local_batch_size,
+        split='val',
+      )
+
+      real_samples_list = []
+      real_labels_list = []
+      for batch_idx, batch in enumerate(val_loader):
+        batch = input_pipeline.prepare_batch_data(batch)
+        real_batch = batch['image']
+        label_batch = batch['label']
+        # No slicing needed - data is already (B, H, W, 16)
+        real_batch = real_batch.reshape(-1, *real_batch.shape[2:])
+        label_batch = label_batch.reshape(-1)
+        real_samples_list.append(np.array(real_batch))
+        real_labels_list.append(np.array(label_batch))
+        if len(real_samples_list) * real_batch.shape[0] >= eval_batch_size:
+          break
+
+      if len(real_samples_list) == 0:
+        log_for_0(f'  Warning: No validation samples loaded')
+        writer.flush()
+        continue
+
+      real_samples = np.concatenate(real_samples_list, axis=0)[:eval_batch_size]
+      real_labels = np.concatenate(real_labels_list, axis=0)[:eval_batch_size]
+      log_for_0(f'  Loaded {len(real_samples)} real samples')
+      log_for_0(f'  Real samples stats: min={real_samples.min():.4f}, max={real_samples.max():.4f}, mean={real_samples.mean():.4f}')
+
+            # STEP 2: Generate samples with MATCHING class labels (CRITICAL FIX!)
+      num_devices = jax.local_device_count()
+      device_batch_size = config.fid.device_batch_size
+      samples_per_iter = num_devices * device_batch_size
+      num_iters = (len(real_labels) + samples_per_iter - 1) // samples_per_iter
+
+      eval_samples = []
+      generated_labels = []  # Track which labels were actually generated
+      
+      for i in range(num_iters):
+        start_idx = i * samples_per_iter
+        end_idx = min(start_idx + samples_per_iter, len(real_labels))
+
+        # Get labels for this batch
+        batch_labels = real_labels[start_idx:end_idx]
+        actual_batch_size = len(batch_labels)  # Store actual size before padding
+
+        # Pad if needed to match device count
+        if len(batch_labels) < samples_per_iter:
+          pad_size = samples_per_iter - len(batch_labels)
+          batch_labels = np.concatenate([batch_labels, batch_labels[:pad_size]])
+
+        # Reshape for pmap: (num_devices, device_batch_size)
+        batch_labels_reshaped = batch_labels.reshape(num_devices, device_batch_size)
+        batch_labels_jax = jnp.array(batch_labels_reshaped)
+
+        # CRITICAL FIX: Fold epoch into sample_idx so each epoch generates DIFFERENT samples
+        # Without this, the same sample_idx values produce identical outputs every epoch
+        sample_idx = jnp.arange(num_devices) + i * num_devices + (epoch + 1) * 10000
+        if i == 0:  # Log only first batch
+          log_for_0(f'    Batch {i}: sample_idx={sample_idx[:3].tolist()}..., epoch={epoch+1}')
+        variable = {"params": state.ema_params}
+
+        # Generate with MATCHING class labels!
+        latent = p_sample_step(variable, sample_idx=sample_idx, class_idx=batch_labels_jax)
+        latent = latent.reshape(-1, *latent.shape[2:])
+        samples = latent.transpose(0, 2, 3, 1)
+        
+        # Only keep the actual samples (not padded ones)
+        samples_np = np.array(samples)[:actual_batch_size]
+        eval_samples.append(samples_np)
+        generated_labels.extend(real_labels[start_idx:end_idx].tolist())
+
+      eval_samples = np.concatenate(eval_samples, axis=0)
+      generated_labels = np.array(generated_labels)
+
+      # Track how many values are out of bounds (should decrease as training improves)
+      out_of_bounds = np.sum((eval_samples < -1.0) | (eval_samples > 1.0))
+      total_voxels = eval_samples.size
+      pct_oob = 100.0 * out_of_bounds / total_voxels
+      log_for_0(f'  Out-of-bounds voxels before clipping: {out_of_bounds}/{total_voxels} ({pct_oob:.2f}%)')
+
+      # Clip generated samples to match real data range [-1, 1]
+      # This is necessary during early training when the model hasn't learned proper bounds yet
+      # As training progresses, fewer voxels should need clipping
+      eval_samples = np.clip(eval_samples, -1.0, 1.0)
+
+      # Verify alignment
+      assert len(eval_samples) == len(real_labels) == len(generated_labels)
+      assert np.all(generated_labels == real_labels), "Label mismatch!"
+      
+      log_for_0(f'  Generated {len(eval_samples)} evaluation samples with matching class labels')
+      log_for_0(f'  Real labels (first 10): {real_labels[:10]}')
+      log_for_0(f'  Generated for labels (first 10): {generated_labels[:10]}')
+      log_for_0(f'  Generated samples stats: min={eval_samples.min():.4f}, max={eval_samples.max():.4f}, mean={eval_samples.mean():.4f}, std={eval_samples.std():.4f}')
+      log_for_0(f'  Real samples stats (for comparison): mean={real_samples.mean():.4f}, std={real_samples.std():.4f}')
+      log_for_0(f'  EMA params norm: {np.linalg.norm(jax.tree_util.tree_leaves(state.ema_params)[0].flatten()[:100]):.4f}')
+      
+      # STEP 3: Compute metrics on class-matched pairs
+      try:
+        # Compute Chamfer Distance
+        if config.get('evaluation', {}).get('chamfer_enabled', True):
+          threshold = config.get('evaluation', {}).get('chamfer_threshold', -0.5)
+          cd_mean, cd_std = chamfer_distance_batch(eval_samples, real_samples, threshold=threshold)
+          log_for_0(f'  Chamfer Distance: {cd_mean:.4f} ± {cd_std:.4f}')
+          writer.write_scalars(epoch+1, {
+            'chamfer_distance_mean': cd_mean,
+            'chamfer_distance_std': cd_std
+          })
+
+        # Compute IoU
+        if config.get('evaluation', {}).get('iou_enabled', True):
+          iou_threshold = config.get('evaluation', {}).get('iou_threshold', 0.0)
+          iou_mean, iou_std = compute_voxel_iou(eval_samples, real_samples, threshold=iou_threshold)
+          log_for_0(f'  Voxel IoU: {iou_mean:.4f} ± {iou_std:.4f}')
+          writer.write_scalars(epoch+1, {
+            'voxel_iou_mean': iou_mean,
+            'voxel_iou_std': iou_std
+          })
+
+        # Early stopping check
+        if config.get('evaluation', {}).get('early_stopping_patience', 0) > 0:
+          current_metric = cd_mean if early_stopping_metric == 'chamfer_distance' else iou_mean
+          # ... rest of early stopping logic
+
+      except Exception as e:
+        import traceback
+        log_for_0(f'  Warning: Evaluation failed: {e}')
+        log_for_0(f'  Traceback: {traceback.format_exc()}')
+
+      writer.flush()
 
     ########### FID ###########
     if (

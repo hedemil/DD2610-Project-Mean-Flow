@@ -88,8 +88,13 @@ class LatentManager:
     def encode(self, images, rng):
         return self.vae.apply({'params':self.vae_params}, images, method=FlaxAutoencoderKL.encode).latent_dist.sample(key=rng)*0.18215
     
-    def cached_encode(self, cached_value, rng):
-        return LatentDist(cached_value).sample(key=rng)*0.18215
+    def cached_encode(self, cached_value, rng, deterministic=False):
+        """
+        For latent data: sample from distribution (mean + std * noise)
+        For 3D data: use deterministic=True to just return mean (no sampling)
+        """
+        dist = LatentDist(cached_value, deterministic=deterministic)
+        return dist.sample(key=rng)*0.18215
 
     def decode(self, latents):
         return self.decode_fn(latents / 0.18215)['sample']
