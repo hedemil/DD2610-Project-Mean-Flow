@@ -6,20 +6,6 @@ Adaptation of [MeanFlow](https://arxiv.org/abs/2505.13447) (Geng et al., 2025) f
 
 This project extends MeanFlow, a one-step generative model based on modeling average velocity fields, to generate 3D voxel data. We use the Diffusion Transformer (DiT) architecture and conduct ablation studies on key hyperparameters.
 
-## Interactive 3D Samples
-
-The following links open **interactive Three.js visualizations**
-(rotate, zoom, inspect voxels):
-
-- 🔢 **Sample 3** – Generated digit (Step 156k)  
-  https://hedemil.github.io/meanflow-jax/sample_003.html
-
-- 🔢 **Sample 4** – Generated digit (Step 156k)  
-  https://hedemil.github.io/meanflow-jax/docs/sample_004.html
-
-- 🔢 **Sample 5** – Generated digit (Step 156k)  
-  https://hedemil.github.io/meanflow-jax/docs/sample_005.html
-
 
 **Key Features:**
 - Single-step 3D voxel generation
