@@ -12,13 +12,13 @@ The following links open **interactive Three.js visualizations**
 (rotate, zoom, inspect voxels):
 
 - 🔢 **Sample 3** – Generated digit (Step 156k)  
-  https://hedemil.github.io/meanflow-jax/sample_003.html
+  https://hedemil.github.io/meanflow-jax/docs/sample_003.html
 
 - 🔢 **Sample 4** – Generated digit (Step 156k)  
-  https://hedemil.github.io/meanflow-jax/sample_004.html
+  https://hedemil.github.io/meanflow-jax/docs/sample_004.html
 
 - 🔢 **Sample 5** – Generated digit (Step 156k)  
-  https://hedemil.github.io/meanflow-jax/sample_005.html
+  https://hedemil.github.io/meanflow-jax/docs/sample_005.html
 
 
 **Key Features:**
